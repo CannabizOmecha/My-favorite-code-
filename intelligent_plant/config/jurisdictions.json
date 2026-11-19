@@ -1,0 +1,33 @@
+{
+  "_comment": "Jurisdiction rules are CONFIGURATION, not code (Chapter 14.3). Status reflects the manuscript's record as of mid-November 2026. Verify against primary sources before operational use.",
+  "as_of": "2026-11-15",
+  "jurisdictions": {
+    "US-FEDERAL": {
+      "categories": {
+        "fda_approved_marijuana_product": {"schedule": "III", "basis": "91 Fed. Reg. 22714 (Apr. 28, 2026)", "refs": [17]},
+        "state_medical_licensed": {"schedule": "III", "requires_dea_registration": true, "basis": "91 Fed. Reg. 22714", "refs": [17], "under_challenge": "D.C. Cir. Nos. 26-1106, 26-1130"},
+        "adult_use": {"schedule": "I", "basis": "Unchanged; pending proceeding (89 Fed. Reg. 44597)", "refs": [18]},
+        "hemp": {"schedule": "not_controlled", "basis": "2018 Farm Bill as amended by P.L. 119-37 s.781", "refs": [143, 47]}
+      },
+      "irc_280e_applies_to_schedules": ["I", "II"],
+      "dea_supply_chain_alignment_deadline": "2026-11-29",
+      "hemp": {
+        "delta9_thc_max_pct_dry_weight": 0.3,
+        "rules_by_effective_date": [
+          {"effective": "2018-12-20", "basis": "delta9", "max_pct": 0.3, "per_container_total_thc_mg": null},
+          {"effective": "2026-11-12", "exclude_non_naturally_produced_cannabinoids": true},
+          {"effective": "2026-12-11", "basis": "total_thc", "max_pct": 0.3, "per_container_total_thc_mg": 0.4}
+        ]
+      }
+    },
+    "US-OK": {
+      "parent": "US-FEDERAL",
+      "program": "medical",
+      "notes": "Add state track-and-trace, testing panels and limits here."
+    },
+    "DE": {"program": "medical_prescription_and_limited_adult", "basis": "CanG, in force 2024-04-01", "refs": [146]},
+    "CA": {"program": "adult_use_and_medical", "basis": "Cannabis Act 2018"},
+    "TH": {"program": "medical_restricted", "notes": "Liberalised 2022 then re-restricted: reversal risk is real."},
+    "UY": {"program": "state_pharmacy_adult_use", "basis": "2013"}
+  }
+}
