@@ -52,11 +52,36 @@ async def demo(use_llm: bool | None) -> None:
         print("  agent failures:", report.agent_failures)
 
 
+def quantum_bench() -> None:
+    import numpy as np
+    from .quantum import algorithms as qa
+    from .quantum.advantage import decide
+    from .quantum.statevector import bell_pair
+    print("Exact state-vector simulation (classical cost grows as 2**n; no speed-up is claimed).\n")
+    b = bell_pair()
+    print(f"Bell pair: P(00)={b.probabilities()[0]:.2f} P(11)={b.probabilities()[3]:.2f}, "
+          f"entanglement entropy {b.entanglement_entropy([0]):.3f} bit")
+    v = qa.vqe(qa.H2_HAMILTONIAN)
+    print(f"VQE H2: {v.energy + qa.H2_NUCLEAR_REPULSION:.6f} Ha vs exact {v.exact_energy + qa.H2_NUCLEAR_REPULSION:.6f} "
+          f"(chemical accuracy: {v.chemical_accuracy}, {v.evaluations} energy evaluations)")
+    g = qa.grover_search(12, {1234})
+    print(f"Grover N=4096: found {g.found} with P={g.success_probability:.4f} in {g.quantum_oracle_queries} oracle "
+          f"queries vs {g.classical_expected_queries:.0f} expected classically")
+    rng = np.random.default_rng(0)
+    Q = rng.normal(size=(10, 10)); Q = (Q + Q.T) / 2
+    d = decide(Q)
+    print(f"QAOA 10-var QUBO: P(optimum)={d.quantum.success_probability:.3f} (random: {1/1024:.4f}), "
+          f"approx ratio {d.quantum.approximation_ratio:.3f}; gate -> {d.chosen.method}. {d.rationale}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="intelligent_plant")
-    ap.add_argument("command", choices=["demo"])
+    ap.add_argument("command", choices=["demo", "quantum"])
     ap.add_argument("--llm", choices=["auto", "on", "off"], default="auto")
     a = ap.parse_args()
+    if a.command == "quantum":
+        quantum_bench()
+        return
     asyncio.run(demo({"auto": None, "on": True, "off": False}[a.llm]))
 
 

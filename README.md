@@ -8,7 +8,8 @@ of Chapter 16 are code here, and the worked examples in the book are regression 
 ```bash
 pip install -e ".[dev]"          # numpy + pytest; add [llm] for Claude reasoning
 python -m intelligent_plant demo # one autonomous cycle over a SYNTHETIC facility, clinic and supply chain
-pytest                           # 56 tests: Appendix A worked examples + safety invariants
+python -m intelligent_plant quantum  # superposition, entanglement, VQE, Grover, QAOA benchmarks
+pytest                           # 80 tests: Appendix A worked examples + safety invariants
 ```
 
 ## Architecture
@@ -50,6 +51,36 @@ pytest                           # 56 tests: Appendix A worked examples + safety
 | | `agents/moe.py` gated, reliability-weighted experts; safety flags are a union, blocking verdicts can't be outvoted | |
 | | `agents/swarm.py`, `agents/llm.py` (Claude, optional) | |
 | Loop | `orchestrator.py` `IntelligentEnterprise.run_forever(feed)` + actuators + human `decide()` | Ch 16.1 |
+
+## Self-iterating learning (`learning/continual.py`)
+
+Every cycle, `ContinualLearningAgent` runs one self-iteration of each registered model:
+
+- **Recursive Bayesian inference.** A conjugate Normal–Inverse-Gamma linear model is updated one observation at a
+  time. Its Student-t predictive intervals are wide when data are few and tighten as data accumulate, and they are
+  measured to be calibrated (90% intervals cover ~90% of new outcomes).
+- **Champion/challenger.** Challengers are retrained over a ladder of recent windows and scored *prospectively*,
+  on outcomes that arrived after their training cutoff. A challenger is promoted only if it is ≥2% better (a
+  threshold fixed in advance) **and** passes the Appendix C.5 gate. Clinical models wait for their named owner.
+- **Drift and fail-safe.** Input drift (PSI) and prospective degradation are monitored. A degraded champion is
+  **suspended and abstains** until a validated replacement exists. In tests, a regime change is caught within one
+  cycle, with no false alarms while data are stable, and the model recovers to the noise floor within 100–200
+  outcomes.
+- **Never learns from itself.** Only measured outcomes may train a model. Feeding back its own predictions raises
+  an error, because that is how feedback loops amplify error.
+
+## Quantum algorithms (`quantum/`)
+
+An exact state-vector simulator implements superposition, interference, entanglement (with von Neumann entropy)
+and Born-rule measurement. On it run **QAOA** (QUBO optimisation), **Grover** search and **VQE**. VQE reproduces
+the textbook H₂ ground state, −1.137306 Ha, within chemical accuracy. `QuantumPortfolioAgent` uses QAOA to pick
+which cultivars to advance, trading patient-first value against kinship so that near-clones aren't both selected
+(Ch 9.4).
+
+Following Chapter 15, **every quantum result is benchmarked against the classical answer**, and the decision gate
+uses quantum only when it is at least as good. On a simulator it never is faster: the cost grows as 2ⁿ, so the gate
+keeps the classical answer and logs both. A real QPU plugs in through the `QuantumBackend` protocol and is held to
+the same test.
 
 ## What runs on its own, and what waits for a person
 

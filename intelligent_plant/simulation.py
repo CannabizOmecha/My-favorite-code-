@@ -96,9 +96,37 @@ def patient_logs(n: int, start: datetime, *, oral_redose_at: int | None = None,
     return logs
 
 
+CANDIDATES = [
+    CandidateCultivar("Fairland CBD-20", 20.5, 0.06, 0.9, 0.8, 0.7, 0.9, 1.2),
+    CandidateCultivar("Fairland CBD-20 sib", 20.2, 0.05, 0.9, 0.8, 0.7, 0.9, 1.2),   # near-clone of the above
+    CandidateCultivar("Prairie 20:1", 19.0, 0.12, 0.8, 0.9, 0.9, 1.1, 1.0),
+    CandidateCultivar("Osage 20:1", 21.0, 0.08, 0.7, 0.9, 0.8, 1.0, 1.1),
+    CandidateCultivar("Neosho 20:1", 19.5, 0.09, 0.8, 0.7, 0.9, 1.0, 1.3),
+    CandidateCultivar("Plains High-THC", 0.03, 0.08, 0.7, 0.6, 0.6, 1.4, 1.0),
+]
+KINSHIP = np.full((6, 6), 0.05)
+KINSHIP[0, 1] = KINSHIP[1, 0] = 0.9   # siblings: advancing both would narrow the gene pool
+np.fill_diagonal(KINSHIP, 0.0)
+
+
+def yield_learning_loop(n: int = 300, seed: int = 11):
+    """A self-iterating yield model fed with SYNTHETIC measured outcomes:
+    yield (g/m2) ~ DLI, leaf VPD, and EC. Real use: feed harvest records."""
+    from .learning.continual import ChampionChallengerLoop
+    rng = np.random.default_rng(seed)
+    loop = ChampionChallengerLoop("yield_g_m2", 3, "model_owner", "Indoor flowering rooms, this facility",
+                                  ["outdoor", "new cultivars not in training data"], window=300)
+    for _ in range(n):
+        dli_, vpd_, ec_ = rng.uniform(25, 50), rng.uniform(0.9, 1.7), rng.uniform(1.4, 2.6)
+        y = 12 * dli_ - 150 * (vpd_ - 1.35) ** 2 + 20 * ec_ + rng.normal(0, 25)
+        loop.observe([dli_, vpd_, ec_], y)
+    return loop
+
+
 def build_world(ent) -> dict:
     """Observations for one cycle across all domains."""
     seed_registry_records(ent)
+    ent.learning_loops["yield_g_m2"] = yield_learning_loop()
     # Patients (identities go straight into the vault; agents see pseudonyms only)
     p_new = ent.enroll_patient("Jane Example, DOB 1971-03-02",
                                {"age_band": "55-64", "indication": "chronic_pain_adult", "consent_version": "v3"},
@@ -137,10 +165,9 @@ def build_world(ent) -> dict:
     breeding = {
         "traits": {"chemotype_ratio": dict(zip(("X", "y"), oligogenic_trait())),
                    "yield": dict(zip(("X", "y"), polygenic_trait()))},
-        "candidates": [CandidateCultivar("Fairland CBD-20", 20.5, 0.06, 0.9, 0.8, 0.7, 0.9, 1.2),
-                       CandidateCultivar("Prairie 20:1", 19.0, 0.12, 0.8, 0.9, 0.9, 1.1, 1.0),
-                       CandidateCultivar("Plains High-THC", 0.03, 0.08, 0.7, 0.6, 0.6, 1.4, 1.0)],
-        "target_ratio": 20.0, "kinship_mean": 0.015,
+        "candidates": CANDIDATES,
+        "target_ratio": 20.0, "kinship_mean": 0.015, "advance_k": 3,
+        "kinship": KINSHIP,
         "seedling_sex_calls": [{"id": "S-17", "call": "male", "confidence": 0.998}],
     }
     rooms = {

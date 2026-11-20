@@ -14,6 +14,7 @@ from .agents.clinical import TitrationPlan, clinical_agents
 from .agents.compliance import compliance_agents
 from .agents.cultivation import cultivation_agents
 from .agents.enterprise import enterprise_agents
+from .agents.learning import learning_agents
 from .agents.llm import ClaudeReasoner
 from .agents.processing import processing_agents
 from .agents.swarm import CycleReport, Swarm, default_critics
@@ -50,8 +51,9 @@ class IntelligentEnterprise:
         self.llm = ClaudeReasoner(enabled=use_llm)
         self.state = FacilityState()
         self.patients: dict[str, dict] = {}       # live clinical state keyed by pseudonym
+        self.learning_loops: dict = {}              # model_id -> ChampionChallengerLoop (self-iterating)
         agents = (cultivation_agents() + breeding_agents() + processing_agents() + compliance_agents()
-                  + clinical_agents() + enterprise_agents())
+                  + clinical_agents() + enterprise_agents() + learning_agents())
         self.swarm = Swarm(agents, default_critics(with_jury=jury and self.llm.available), actuators=self._actuators())
         self.history: list[CycleReport] = []
 
@@ -91,6 +93,11 @@ class IntelligentEnterprise:
         def rollback(p: Proposal, ctx: Context) -> None:
             self.registry.rollback(p.payload["model_id"])
 
+        def promote(p: Proposal, ctx: Context) -> None:   # only reached after the model owner approves
+            loop = self.learning_loops.get(p.payload["model_id"])
+            if loop:
+                loop.approve_pending(loop.owner)
+
         def titration(p: Proposal, ctx: Context) -> None:   # only reached after clinician approval
             pt = self.patients.get(p.payload["patient_id"])
             plan: TitrationPlan | None = pt and pt.get("plan")
@@ -109,7 +116,7 @@ class IntelligentEnterprise:
                 "patient_reminder": message, "safety_alert": message, "interaction_alert": message,
                 "batch_hold": hold, "batch_release": release, "calibration_schedule": work_order,
                 "irrigation_schedule": irrigate, "lighting_energy": dim, "hemp_compliance_check": quarantine,
-                "model_rollback": rollback, "titration_step": titration}
+                "model_rollback": rollback, "titration_step": titration, "model_deployment": promote}
 
     # ------------------------------------------------------------ patients
     def enroll_patient(self, identity: str, record: dict, live: dict) -> str:
@@ -130,6 +137,7 @@ class IntelligentEnterprise:
     def context(self, observations: dict, now: datetime | None = None) -> Context:
         obs = dict(observations)
         obs.setdefault("patients", self.patients)
+        obs.setdefault("learning_loops", self.learning_loops)
         return Context(self.store, self.approvals, self.registry, self.config, self.llm,
                        now or datetime.now(timezone.utc), obs)
 
