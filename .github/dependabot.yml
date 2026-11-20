@@ -1,0 +1,12 @@
+# Opens small pull requests when the CI actions or Python dependencies have updates,
+# so security fixes arrive without anyone having to remember to check.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly

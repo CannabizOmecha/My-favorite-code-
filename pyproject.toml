@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "intelligent-plant"
+version = "0.1.0"
+description = "Autonomous, governed seed-to-patient cannabis operations implementing 'The Intelligent Plant'"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+llm = ["anthropic>=1.0"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+intelligent-plant = "intelligent_plant.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["intelligent_plant*"]
+
+[tool.setuptools.package-data]
+"intelligent_plant.config" = ["*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
