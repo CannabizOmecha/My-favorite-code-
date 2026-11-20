@@ -7,7 +7,7 @@ name = "intelligent-plant"
 version = "0.1.0"
 description = "Autonomous, governed seed-to-patient cannabis operations implementing 'The Intelligent Plant'"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24"]
+dependencies = ["numpy>=2.2.6"]
 
 [project.optional-dependencies]
 llm = ["anthropic>=1.0"]
