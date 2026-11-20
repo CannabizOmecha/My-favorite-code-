@@ -28,6 +28,8 @@ are ethical obligations. They never override a safety rule.
 
 ## Working in this repo
 
+- CI (`.github/workflows/tests.yml`) runs the full suite on Python 3.10–3.13 plus a build-and-install check on every
+  pull request. Never skip, disable or weaken a test to make CI green; fix the cause.
 - `pytest` must pass. Book worked examples are regression tests; change them only if the book's math was wrong, and
   say why.
 - `python -m intelligent_plant demo` shows a full cycle, including "WHAT THE PATIENT SEES".

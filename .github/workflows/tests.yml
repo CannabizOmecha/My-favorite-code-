@@ -1,0 +1,74 @@
+# Runs on every push and pull request. A red X here means something broke,
+# possibly one of the patient-safety rules in CLAUDE.md, so do not merge until it is green.
+name: tests
+
+on:
+  push:
+    branches: [main]          # PR commits are covered by pull_request; avoids running twice
+  pull_request:
+  workflow_dispatch:   # lets you re-run it by hand from the Actions tab
+
+# Least privilege: the workflow can read the code and nothing else.
+permissions:
+  contents: read
+
+# A newer push to the same branch cancels the older, now-obsolete run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false          # report every Python version, not just the first failure
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]   # every version pyproject.toml supports
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install (without the optional Claude SDK, to prove the deterministic fallback works)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Run all tests (Appendix A worked examples, safety and patient-experience rules)
+        run: python -m pytest -q --tb=short
+      - name: Smoke test - full seed-to-patient cycle on synthetic data
+        run: |
+          python -m intelligent_plant demo --llm off | tee demo.txt
+          grep -q "chain intact: True" demo.txt
+      - name: Smoke test - quantum benchmarks
+        run: python -m intelligent_plant quantum
+
+  package:
+    name: build and install like a real user
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir dist
+      - name: Install the wheel into a clean environment and run it outside the repo
+        run: |
+          python -m venv /tmp/user-env
+          /tmp/user-env/bin/pip install dist/*.whl
+          cd /tmp
+          /tmp/user-env/bin/python -c "from intelligent_plant.knowledge.regulation import load_jurisdictions; print('jurisdiction config as of', load_jurisdictions()['as_of'])"
+          /tmp/user-env/bin/intelligent-plant demo --llm off > demo.txt
+          grep -q "WHAT THE PATIENT SEES" demo.txt
+          grep -q "chain intact: True" demo.txt

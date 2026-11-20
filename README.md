@@ -1,5 +1,7 @@
 # The Intelligent Plant — autonomous seed-to-patient system
 
+[![tests](https://github.com/CannabizOmecha/My-favorite-code-/actions/workflows/tests.yml/badge.svg)](https://github.com/CannabizOmecha/My-favorite-code-/actions/workflows/tests.yml)
+
 > **North star: improve the experience and outcomes of patients.** Everything upstream exists for the person at the
 > end of the supply chain. See [`CLAUDE.md`](CLAUDE.md) for the rules that protect patients.
 
