@@ -68,6 +68,7 @@ TASKS: dict[str, TaskPolicy] = {
     # Clinical (Chapter 13.4: the tool proposes; the clinician disposes)
     "patient_log_capture": TaskPolicy(Autonomy.AUTOMATE, "data_steward", "low", "high", "Table 13.2"),
     "patient_reminder": TaskPolicy(Autonomy.AUTOMATE, "care_coordinator", "low", "high", "Ch 13.2"),
+    "patient_progress_summary": TaskPolicy(Autonomy.AUTOMATE, "care_coordinator", "low", "high", "Ch 13.3"),
     "interaction_alert": TaskPolicy(Autonomy.AUTOMATE, "pharmacist", "low", "high", "Ch 13.4 hard rules"),
     "safety_alert": TaskPolicy(Autonomy.AUTOMATE, "treating_clinician", "low", "high", "Ch 13.2"),
     "consultation_report": TaskPolicy(Autonomy.DECISION_SUPPORT, "treating_clinician", "high", "medium", "Ch 13.1"),

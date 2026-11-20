@@ -1,5 +1,8 @@
 # The Intelligent Plant — autonomous seed-to-patient system
 
+> **North star: improve the experience and outcomes of patients.** Everything upstream exists for the person at the
+> end of the supply chain. See [`CLAUDE.md`](CLAUDE.md) for the rules that protect patients.
+
 Software implementation of C. A. Cassinelli, *The Intelligent Plant: AI-Powered Cannabis Science, Therapeutics and
 Operations* (Second Revised Edition, 2026). Every formula in Appendix A, the Appendix B data schema, the hard rules
 of Table 6.1, the autonomy ordering of Table 8.2, the consultation sequence of Chapter 13 and the governance checklist
@@ -9,7 +12,7 @@ of Chapter 16 are code here, and the worked examples in the book are regression 
 pip install -e ".[dev]"          # numpy + pytest; add [llm] for Claude reasoning
 python -m intelligent_plant demo # one autonomous cycle over a SYNTHETIC facility, clinic and supply chain
 python -m intelligent_plant quantum  # superposition, entanglement, VQE, Grover, QAOA benchmarks
-pytest                           # 80 tests: Appendix A worked examples + safety invariants
+pytest                           # 92 tests: Appendix A worked examples + safety invariants
 ```
 
 ## Architecture
@@ -51,6 +54,18 @@ pytest                           # 80 tests: Appendix A worked examples + safety
 | | `agents/moe.py` gated, reliability-weighted experts; safety flags are a union, blocking verdicts can't be outvoted | |
 | | `agents/swarm.py`, `agents/llm.py` (Claude, optional) | |
 | Loop | `orchestrator.py` `IntelligentEnterprise.run_forever(feed)` + actuators + human `decide()` | Ch 16.1 |
+
+## What the patient experiences (`patient/communication.py`)
+
+- **Plain-language messages** (reading grade ≤ 8, no internal IDs or jargon) that say what happened, what to do now,
+  and when to get help right away (911 / Poison Control 1-800-222-1222). Clinicians get the technical version.
+- **Respect for attention.** Urgent safety messages always go through. Routine ones are de-duplicated, limited to
+  2 per day and held during quiet hours.
+- **Preferences shape care.** Wanting to avoid feeling high filters products to CBD-dominant ones, and a route
+  preference is honoured when it is clinically equivalent. Otherwise the disagreement is flagged for discussion.
+  Patient goals open every consultation report.
+- **Patients see their own progress** in a weekly summary, including when there is still too little data or little
+  change.
 
 ## Self-iterating learning (`learning/continual.py`)
 

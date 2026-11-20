@@ -46,6 +46,12 @@ async def demo(use_llm: bool | None) -> None:
     print("  setpoints:", json.dumps(ent.state.setpoints, default=str))
     print("  batch status:", ent.state.batch_status, "| quarantined:", sorted(ent.state.quarantined_products))
     print("  work orders:", ent.state.work_orders, "| messages sent:", len(ent.state.outbox))
+    print("\n## WHAT THE PATIENT SEES (plain language; internal IDs never shown)")
+    for msg in ent.messenger.sent:
+        print(f"  [{msg.urgency}] " + _w(msg.text, 12))
+    for msg in ent.messenger.held:
+        print(f"  [held: {msg.held_reason}] " + _w(msg.text[:90] + "...", 12))
+    print("  patient message stats:", ent.messenger.stats())
     ok, _ = ent.store.verify_chain()
     print(f"\n  {ent.store.count()} records in the hash-chained store; chain intact: {ok}")
     if report.agent_failures:

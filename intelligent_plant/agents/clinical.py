@@ -10,7 +10,13 @@ enforces the structure around them (Table 13.1).
 ctx.observations["patients"][pid] = {
   "profile": PatientRiskProfile, "indication": str, "standard_care_tried": bool,
   "onset_need": "sustained"|"rapid", "status": "new_consult"|"titrating"|...,
-  "plan": TitrationPlan|None, "logs": [Table 13.2 dicts], "meds_changed": bool}
+  "plan": TitrationPlan|None, "logs": [Table 13.2 dicts], "meds_changed": bool,
+  "preferences": {"avoid_psychoactivity": bool, "route_preference": str, "goals": [str]},
+  "last_summary_at": datetime|None}
+
+The patient's own priorities (Chapter 13.1: "their preferences about psychoactivity") shape every
+recommendation, inside safety limits: a preference can narrow the options, never widen them past a
+safety rule.
 ctx.observations["product_catalog"] = [{product_id, form, route, unit_mg_thc,
   unit_mg_cbd, coa: COA, batch_cv, available_months}]
 """
@@ -26,6 +32,7 @@ from ..science.pharmacology import ROUTES, oral_redose_safe, relative_thc_exposu
 from ..science.quality import audit_coa
 from ..science.stats import n_of_1_schedule, partial_pool, population_hyperparameters
 from .base import Agent, Context, Proposal
+from ..patient.communication import progress_summary
 from .moe import Expert, ExpertOpinion, MixtureOfExperts
 
 SCOPE = ("Adults (>=18) with an indication in the curated evidence map, under a treating clinician. "
@@ -123,6 +130,13 @@ class RouteExpert(Expert):
             rec, why = "oral", ("Sustained effect; non-inhaled is the guideline-recommended form for chronic pain "
                                 "(ref 97). Onset 60-120 min: never re-dose before the full effect.")
         flags = []
+        pref = (q.get("preferences") or {}).get("route_preference")
+        if pref and pref != rec:
+            if need == "sustained" and pref in ("oral", "oromucosal"):
+                rec, why = pref, why + f" Patient prefers {pref}; clinically equivalent for sustained effect."
+            else:
+                flags.append(f"Patient prefers {pref}; recommended {rec} for clinical reasons. Discuss with the "
+                             f"patient rather than override their preference silently.")
         if q.get("food_relation") == "variable":
             flags.append("CBD absorption varies ~3.8x with high-fat food (ref 94): take consistently relative to meals.")
         return ExpertOpinion(self.name, rec, 0.8, flags, {"route": rec, "why": why, "pk": ROUTES[rec]},
@@ -165,6 +179,9 @@ class ProductMatchExpert(Expert):
                 reasons.append(f"route {prod['route']} != {route}")
             if prod.get("batch_cv", 1.0) > 0.10:
                 reasons.append(f"batch CV {prod['batch_cv']:.0%} > 10%")
+            if (q.get("preferences") or {}).get("avoid_psychoactivity") and \
+                    prod["unit_mg_cbd"] < 10 * max(prod["unit_mg_thc"], 0.01):
+                reasons.append("patient wants to avoid feeling high; product is not CBD-dominant")
             if reasons:
                 rejected.append({"product_id": prod["product_id"], "reasons": reasons})
                 continue
@@ -204,7 +221,7 @@ class ConsultationAgent(Agent):
             q = {"patient_id": pid, "indication": pt["indication"], "profile": pt["profile"],
                  "standard_care_tried": pt.get("standard_care_tried", False),
                  "onset_need": pt.get("onset_need", "sustained"), "food_relation": pt.get("food_relation"),
-                 "medications": pt["profile"].medications}
+                 "medications": pt["profile"].medications, "preferences": pt.get("preferences", {})}
             first = await self.moe.consult(q, ctx)
             route = self.moe.answer(first, "route") or "oral"
             gate = self.moe.answer(first, "trial")
@@ -219,6 +236,9 @@ class ConsultationAgent(Agent):
                                             {"patient_id": pid, **a}, {"safety": 1.0},
                                             [f"refs {a['refs']}"], target=f"patient:{pid}:ddi:{a['rule_id']}"))
             sequence = {
+                "0_patient_priorities": {"goals": pt.get("preferences", {}).get("goals", []),
+                                         "preferences": pt.get("preferences", {}),
+                                         "note": "Start the conversation here: what matters most to this patient."},
                 "1_indication_and_evidence": ev.findings | {"recommendation": gate},
                 "2_contraindications": [f for f in first.flags if "]" in f and "DDI" not in f],
                 "3_interactions": [f for f in first.flags if "DDI" in f],
@@ -279,8 +299,19 @@ class TitrationMonitorAgent(Agent):
                 for a in check_interactions(pt["profile"].medications, {"CBD", "THC"}):
                     out.append(Proposal(self.name, "interaction_alert",
                                         f"Patient {pid} medication change: {a.message} Action: {a.action}",
-                                        {"patient_id": pid, **a.__dict__}, {"safety": 1.0}, [f"refs {a.refs}"],
+                                        {"patient_id": pid, **a.__dict__, "patient_event": "medication_check",
+                                         "notify": ["treating_clinician", "pharmacist", "patient"]},
+                                        {"safety": 1.0}, [f"refs {a.refs}"],
                                         target=f"patient:{pid}:ddi:{a.rule_id}"))
+            last = pt.get("last_summary_at")
+            if logs and (last is None or ctx.now - last >= timedelta(days=7)):
+                goals = pt.get("preferences", {}).get("goals") or [None]
+                out.append(Proposal(self.name, "patient_progress_summary",
+                                    f"Patient {pid}: weekly progress summary sent to the patient.",
+                                    {"patient_id": pid, "notify": ["patient"], "patient_event": "progress_summary",
+                                     "summary": progress_summary(logs, goals[0])},
+                                    {"safety": 0.2, "ethics": 0.6, "accuracy": 0.5}, ["Ch 13.3 patient log"],
+                                    target=f"patient:{pid}:summary"))
             impr = self._improvements(logs)
             est = partial_pool(impr, mu, tau, sigma, min_n=self.min_records)
             out += self._step_logic(pid, plan, logs, est, ctx.now)
@@ -299,7 +330,8 @@ class TitrationMonitorAgent(Agent):
             return []
         return [Proposal(self.name, "patient_reminder",
                          f"Patient {pid}: recent log entries are missing {sorted(missing)}. Reminder sent: write the "
-                         f"numbers down before dosing.", {"patient_id": pid, "missing": sorted(missing)},
+                         f"numbers down before dosing.", {"patient_id": pid, "missing": sorted(missing),
+                                                            "patient_event": "missing_log_fields"},
                          {"safety": 0.3, "accuracy": 0.8}, ["Table 13.2"], target=f"patient:{pid}:reminder")]
 
     def _rule_checks(self, pid: str, logs: list[dict]) -> list[Proposal]:
@@ -311,7 +343,8 @@ class TitrationMonitorAgent(Agent):
                 out.append(Proposal(self.name, "safety_alert",
                                     f"Patient {pid}: oral re-dose {(t1 - t0).total_seconds() / 60:.0f} min after the "
                                     f"previous oral dose. Oral effects can take hours: wait before any further dose.",
-                                    {"patient_id": pid, "at": cur["timestamp"], "notify": ["patient", "clinician"]},
+                                    {"patient_id": pid, "at": cur["timestamp"], "notify": ["patient", "clinician"],
+                                     "patient_event": "oral_redose"},
                                     {"safety": 1.0}, ["Ch 6.1 edible overdose script"],
                                     target=f"patient:{pid}:redose:{cur['timestamp']}"))
             changed = [k for k in ("product_id", "dose_units", "route") if prev.get(k) != cur.get(k)]
@@ -319,7 +352,8 @@ class TitrationMonitorAgent(Agent):
                 out.append(Proposal(self.name, "safety_alert",
                                     f"Patient {pid}: {changed} changed at once; effects can no longer be attributed. "
                                     f"Change one variable at a time.", {"patient_id": pid, "changed": changed,
-                                                                         "notify": ["patient", "clinician"]},
+                                                                         "notify": ["patient", "clinician"],
+                                                                         "patient_event": "multiple_changes"},
                                     {"safety": 0.6, "accuracy": 1.0}, ["Ch 13.2"],
                                     target=f"patient:{pid}:multivar:{cur['timestamp']}"))
         for l in logs[-10:]:
@@ -328,7 +362,8 @@ class TitrationMonitorAgent(Agent):
                 out.append(Proposal(self.name, "safety_alert",
                                     f"Patient {pid}: adverse effect(s) {[a['name'] for a in sev]} at {l['timestamp']}. "
                                     f"Clinician notified: stop or slow per protocol.",
-                                    {"patient_id": pid, "adverse_effects": sev, "notify": ["clinician"]},
+                                    {"patient_id": pid, "adverse_effects": sev, "notify": ["patient", "clinician"],
+                                     "patient_event": "adverse_effect"},
                                     {"safety": 1.0}, ["Table 13.1 initiation rule"],
                                     target=f"patient:{pid}:ae:{l['timestamp']}"))
         return out

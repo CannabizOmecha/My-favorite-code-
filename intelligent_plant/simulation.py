@@ -132,6 +132,8 @@ def build_world(ent) -> dict:
                                {"age_band": "55-64", "indication": "chronic_pain_adult", "consent_version": "v3"},
                                {"status": "new_consult", "indication": "chronic_pain_adult", "standard_care_tried": True,
                                 "onset_need": "sustained", "food_relation": "variable",
+                                "preferences": {"avoid_psychoactivity": True, "route_preference": "oral",
+                                                "goals": ["sleep", "walking the dog again"]},
                                 "profile": PatientRiskProfile(age=55, medications=["warfarin", "lorazepam"],
                                                               cyp2c9_genotype="*1/*3")})
     p_young = ent.enroll_patient("Sam Example, DOB 2003-06-10",
@@ -145,6 +147,7 @@ def build_world(ent) -> dict:
     p_tit = ent.enroll_patient("Alex Example, DOB 1960-01-01",
                                {"age_band": "65-74", "indication": "chronic_pain_adult", "consent_version": "v3"},
                                {"indication": "chronic_pain_adult", "meds_changed": True,
+                                "preferences": {"goals": ["sleep through the night"]},
                                 "profile": PatientRiskProfile(age=66, medications=["clobazam"]),
                                 "logs": patient_logs(12, NOW - timedelta(days=13), oral_redose_at=11, ae_at=11)})
     ent.set_titration_plan(p_tit, TitrationPlan(

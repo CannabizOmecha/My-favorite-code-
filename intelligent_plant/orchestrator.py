@@ -19,6 +19,7 @@ from .agents.llm import ClaudeReasoner
 from .agents.processing import processing_agents
 from .agents.swarm import CycleReport, Swarm, default_critics
 from .data.privacy import PseudonymVault
+from .patient.communication import PatientMessenger
 from .data.store import Provenance, RecordStore
 from .governance.autonomy import ApprovalQueue, ApprovalRequest
 from .governance.registry import ModelRegistry
@@ -50,6 +51,7 @@ class IntelligentEnterprise:
         self.config = load_jurisdictions(config_path)
         self.llm = ClaudeReasoner(enabled=use_llm)
         self.state = FacilityState()
+        self.messenger = PatientMessenger()
         self.patients: dict[str, dict] = {}       # live clinical state keyed by pseudonym
         self.learning_loops: dict = {}              # model_id -> ChampionChallengerLoop (self-iterating)
         agents = (cultivation_agents() + breeding_agents() + processing_agents() + compliance_agents()
@@ -67,9 +69,18 @@ class IntelligentEnterprise:
                                                  if p.payload.get(k) is not None}
 
         def message(p: Proposal, ctx: Context) -> None:
+            """Clinicians get the technical summary; patients get plain language through the
+            messenger (urgent always delivered; routine de-duplicated, capped, quiet hours)."""
             default = {"interaction_alert": ["treating_clinician", "pharmacist"]}.get(p.task, ["patient"])
-            s.outbox.append({"to": p.payload.get("notify", default), "patient_id": p.payload.get("patient_id"),
-                             "task": p.task, "text": p.summary})
+            to = p.payload.get("notify", default)
+            staff = [r for r in to if r != "patient"]
+            if staff:
+                s.outbox.append({"to": staff, "patient_id": p.payload.get("patient_id"), "task": p.task,
+                                 "text": p.summary})
+            if "patient" in to and p.payload.get("patient_event"):
+                self.messenger.send(p.payload["patient_id"], p.payload["patient_event"], p.payload, ctx.now)
+            if p.task == "patient_progress_summary" and p.payload.get("patient_id") in self.patients:
+                self.patients[p.payload["patient_id"]]["last_summary_at"] = ctx.now
 
         def hold(p: Proposal, ctx: Context) -> None:
             s.batch_status[p.payload["batch_id"]] = "hold"
@@ -114,6 +125,7 @@ class IntelligentEnterprise:
 
         return {"climate_setpoint": setpoint, "sensor_failsafe": setpoint, "drying_environment": setpoint,
                 "patient_reminder": message, "safety_alert": message, "interaction_alert": message,
+                "patient_progress_summary": message,
                 "batch_hold": hold, "batch_release": release, "calibration_schedule": work_order,
                 "irrigation_schedule": irrigate, "lighting_energy": dim, "hemp_compliance_check": quarantine,
                 "model_rollback": rollback, "titration_step": titration, "model_deployment": promote}
