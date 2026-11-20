@@ -214,7 +214,8 @@ def test_titration_step_needs_the_treating_clinician():
     with pytest.raises(PermissionError):
         ent.decide(req.request_id, True, "grower", "head_grower")
     ent.decide(req.request_id, False, "Dr. C", "treating_clinician", "stopping instead")
-    assert ent.approvals.overrides and ent.store.all("approval")[0]["status"] == "rejected"
+    stored = ent.store.get("approval", req.proposal_id)
+    assert ent.approvals.overrides and stored["status"] == "rejected" and stored["decided_by"] == "Dr. C"
 
 
 def test_clinician_approval_advances_plan():

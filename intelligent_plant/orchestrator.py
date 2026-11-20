@@ -18,11 +18,15 @@ from .agents.learning import learning_agents
 from .agents.llm import ClaudeReasoner
 from .agents.processing import processing_agents
 from .agents.swarm import CycleReport, Swarm, default_critics
-from .data.privacy import PseudonymVault
+from .calibration.facility import load_calibration
+from .data.privacy import PseudonymVault, key_from_env
 from .patient.communication import PatientMessenger
 from .data.store import Provenance, RecordStore
 from .governance.autonomy import ApprovalQueue, ApprovalRequest
+from .governance.readiness import ReadinessReport, check_readiness, default_artifacts
 from .governance.registry import ModelRegistry
+from .science.chemistry import VolatileLossModel
+from .science.environment import RoomModel
 from .knowledge.regulation import load_jurisdictions
 
 log = logging.getLogger(__name__)
@@ -41,14 +45,39 @@ class FacilityState:
     quarantined_products: set[str] = field(default_factory=set)
 
 
+class ProductionNotReady(RuntimeError):
+    def __init__(self, problems: list[str], report: ReadinessReport | None = None):
+        self.problems, self.report = problems, report
+        detail = "\n".join(f"  - {p}" for p in problems)
+        super().__init__("Refusing to start in production mode:\n" + detail
+                         + (("\n" + report.summary()) if report else ""))
+
+
 class IntelligentEnterprise:
+    """mode="demo" (default): in-memory, synthetic, nothing touches real patients.
+    mode="production": refuses to start unless storage is persistent, the vault key comes from a secrets
+    manager, a facility calibration is loaded, and every human review in governance/readiness.py is signed
+    against the exact artifacts in use. The checks are deliberately not overridable by a flag."""
+
     def __init__(self, db_path: str = ":memory:", vault_path: str = ":memory:", use_llm: bool | None = None,
-                 jury: bool = True, config_path: str | None = None):
+                 jury: bool = True, config_path: str | None = None, mode: str = "demo",
+                 vault_key: bytes | None = None, calibration_path: str | None = None,
+                 signoffs_path: str | None = None, regulatory_review_path: str | None = None,
+                 phi_to_llm_permitted: bool = False):
+        if mode not in ("demo", "production"):
+            raise ValueError("mode must be 'demo' or 'production'")
+        self.mode = mode
+        if mode == "production":
+            self.readiness = self._production_checks(db_path, vault_path, vault_key, calibration_path,
+                                                     signoffs_path, regulatory_review_path)
+            vault_key = vault_key or key_from_env()
         self.store = RecordStore(db_path)
-        self.vault = PseudonymVault(vault_path)
-        self.approvals = ApprovalQueue()
+        self.vault = PseudonymVault(vault_path, key=vault_key)
+        self.approvals = ApprovalQueue(self.store)
         self.registry = ModelRegistry()
         self.config = load_jurisdictions(config_path)
+        # Pseudonymised data is still PHI: it goes to an outside model only under a signed BAA.
+        self.config["privacy"] = {"phi_to_llm_permitted": phi_to_llm_permitted}
         self.llm = ClaudeReasoner(enabled=use_llm)
         self.state = FacilityState()
         self.messenger = PatientMessenger()
@@ -58,6 +87,49 @@ class IntelligentEnterprise:
                   + clinical_agents() + enterprise_agents() + learning_agents())
         self.swarm = Swarm(agents, default_critics(with_jury=jury and self.llm.available), actuators=self._actuators())
         self.history: list[CycleReport] = []
+        self.calibration: dict | None = None
+        if calibration_path:
+            self.apply_calibration(load_calibration(calibration_path))
+
+    @staticmethod
+    def _production_checks(db_path, vault_path, vault_key, calibration_path, signoffs_path,
+                           regulatory_review_path) -> ReadinessReport:
+        problems = []
+        if db_path == ":memory:" or vault_path == ":memory:":
+            problems.append("Record store and vault must be persistent files, not in memory.")
+        elif db_path == vault_path:
+            problems.append("The vault (identities) must be a separate store from the records.")
+        if vault_key is None:
+            try:
+                key_from_env()
+            except ValueError as e:
+                problems.append(str(e))
+        if not calibration_path:
+            problems.append("No facility calibration: run `intelligent-plant calibrate` on this facility's data.")
+        if not signoffs_path:
+            problems.append("No sign-off file given.")
+            raise ProductionNotReady(problems)
+        artifacts = default_artifacts(calibration_path, regulatory_review_path)
+        report = check_readiness(signoffs_path, artifacts)
+        if not report.ready:
+            problems.append("Required human reviews are missing or stale.")
+        if problems:
+            raise ProductionNotReady(problems, report)
+        return report
+
+    def apply_calibration(self, cal: dict) -> None:
+        """Replace illustrative defaults with this facility's fitted parameters."""
+        self.calibration = cal
+        for a in self.swarm.agents:
+            if a.name == "climate_controller" and cal.get("room_model"):
+                a.mpc.model = RoomModel(**cal["room_model"])
+            elif a.name == "decarb_planner" and cal.get("volatile_loss"):
+                v = cal["volatile_loss"]
+                a.volatile, a.calibrated = VolatileLossModel(A=v["A"], Ea_J=v["Ea_J"]), True
+            elif a.name == "nutrients" and cal.get("nutrient_ranges"):
+                for stage, r in cal["nutrient_ranges"].items():
+                    a.ec_range[stage], a.ph_range[stage] = tuple(r["ec"]), tuple(r["ph"])
+                a.source = f"{cal.get('facility', 'facility')} SOP, checked against batch data"
 
     # ------------------------------------------------------------ actuators
     def _actuators(self) -> dict[str, Callable[[Proposal, Context], Any]]:
@@ -183,9 +255,7 @@ class IntelligentEnterprise:
                now: datetime | None = None) -> ApprovalRequest:
         req = self.approvals.decide(request_id, approve, by, role, note)
         ctx = self.context({}, now)
-        self.store.append("approval", {"proposal_id": req.proposal_id, "task": req.task, "owner_role": req.owner_role,
-                                       "status": req.status, "decided_by": by, "note": note},
-                          Provenance(source="human", operator=by))
+        # The decision itself is persisted by ApprovalQueue (hash-chained, survives restarts).
         if approve:
             act = self.swarm.actuators.get(req.task)
             if act:

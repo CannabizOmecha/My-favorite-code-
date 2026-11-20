@@ -7,7 +7,7 @@ ctx.observations keys: "drying_rooms", "decarb_requests", "coas" (COA objects),
 """
 from __future__ import annotations
 
-from ..science.chemistry import plan_decarboxylation
+from ..science.chemistry import VolatileLossModel, plan_decarboxylation
 from ..science.quality import audit_coa, label_claim_mg, label_relative_uncertainty, shewhart
 from .base import Agent, Context, Proposal
 
@@ -41,11 +41,16 @@ class DryingCureAgent(Agent):
 class DecarbPlannerAgent(Agent):
     name, domain = "decarb_planner", "processing"
 
+    def __init__(self) -> None:
+        self.volatile = VolatileLossModel()
+        self.calibrated = False
+
     async def propose(self, ctx: Context) -> list[Proposal]:
         out = []
         for req in ctx.observations.get("decarb_requests", []):
             plans = plan_decarboxylation(req.get("target_conversion", 0.95), acid=req.get("acid", "THCA"),
-                                         temps_c=tuple(range(95, 116, 5)))   # stay near the measured range
+                                         temps_c=tuple(range(95, 116, 5)),   # stay near the measured range
+                                         volatile=self.volatile)
             if not plans:
                 continue
             p = plans[0]
@@ -56,7 +61,8 @@ class DecarbPlannerAgent(Agent):
                                  "alternatives": [x.__dict__ for x in plans[1:3]]},
                                 {"safety": 0.2, "accuracy": 0.6, "efficiency": p.volatile_retention},
                                 ["Arrhenius fit to Wang 2016 (ref 73): Ea 87.1 kJ/mol"],
-                                uncertainty=p.assumption_note))
+                                uncertainty=("Volatile-loss kinetics fitted to this facility's GC data."
+                                             if self.calibrated else p.assumption_note)))
         return out
 
 

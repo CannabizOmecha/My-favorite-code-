@@ -4,6 +4,7 @@ waiting on humans for."""
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import asyncio
 import json
 import textwrap
@@ -80,16 +81,81 @@ def quantum_bench() -> None:
           f"approx ratio {d.quantum.approximation_ratio:.3f}; gate -> {d.chosen.method}. {d.rationale}")
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(prog="intelligent_plant")
-    ap.add_argument("command", choices=["demo", "quantum"])
-    ap.add_argument("--llm", choices=["auto", "on", "off"], default="auto")
-    a = ap.parse_args()
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="intelligent-plant",
+                                 description="The Intelligent Plant: governed seed-to-patient operations.")
+    sub = ap.add_subparsers(dest="command", required=True)
+    d = sub.add_parser("demo", help="one autonomous cycle on SYNTHETIC data")
+    d.add_argument("--llm", choices=["auto", "on", "off"], default="auto")
+    sub.add_parser("quantum", help="quantum algorithm benchmarks vs classical")
+
+    rp = sub.add_parser("review-pack", help="write the clinician and patient message review packets")
+    rp.add_argument("--out", default="review")
+
+    c = sub.add_parser("calibrate", help="fit models to this facility's data (CSV exports)")
+    c.add_argument("--facility", required=True)
+    c.add_argument("--room-log", help="CSV: temp_air,rh,cool,dehum,humid,temp_air_next,rh_next")
+    c.add_argument("--volatile", help="CSV: temp_c,time_s,retention (GC-measured terpene retention)")
+    c.add_argument("--nutrients", help="CSV: stage,ec,ph,met_quality_target")
+    c.add_argument("--sop", help='JSON SOP ranges: {"flowering": {"ec": [1.6, 2.4], "ph": [5.6, 6.4]}, ...}')
+    c.add_argument("--out", default="facility_calibration.json")
+
+    for name, helptext in (("signoff", "record YOUR review sign-off (run by the reviewer)"),
+                           ("readiness", "show which reviews are still outstanding")):
+        x = sub.add_parser(name, help=helptext)
+        if name == "signoff":
+            x.add_argument("item")
+            x.add_argument("--name", required=True)
+            x.add_argument("--role", required=True)
+            x.add_argument("--statement", required=True)
+        x.add_argument("--signoffs", default="signoffs.json")
+        x.add_argument("--calibration", default="facility_calibration.json")
+        x.add_argument("--regulatory", default=None, help="path to REGULATORY_REVIEW.md (default: docs/)")
+
+    a = ap.parse_args(argv)
     if a.command == "quantum":
         quantum_bench()
-        return
-    asyncio.run(demo({"auto": None, "on": True, "off": False}[a.llm]))
+    elif a.command == "demo":
+        asyncio.run(demo({"auto": None, "on": True, "off": False}[a.llm]))
+    elif a.command == "review-pack":
+        from .review_pack import build
+        for kind, path in build(a.out).items():
+            print(f"{kind:9} packet: {path}")
+    elif a.command == "calibrate":
+        import json as _json
+        from .calibration.facility import CalibrationError, calibrate
+        try:
+            cal = calibrate(a.facility, a.room_log, a.volatile, a.nutrients,
+                            _json.loads(Path(a.sop).read_text()) if a.sop else None)
+        except CalibrationError as e:
+            print(f"CALIBRATION REFUSED: {e}")
+            return 2
+        cal.write(a.out)
+        if cal.room_fit:
+            f = cal.room_fit
+            print(f"room model: R2 temp {f['r2_temp']:.2f}, RH {f['r2_rh']:.2f}; holdout RMSE "
+                  f"{f['holdout_rmse_temp_c']:.2f} C, {f['holdout_rmse_rh_pct']:.2f} %RH ({f['n_holdout']} steps)")
+        if cal.volatile_loss:
+            v = cal.volatile_loss
+            print(f"terpene loss: Ea {v['Ea_J'] / 1000:.1f} kJ/mol (R2 {v['r2']:.2f}); {v['direction']}")
+        for chk in cal.nutrient_checks:
+            print(f"nutrients [{chk['stage']}]: {chk['note']}")
+        for src, rej in cal.rejected_rows.items():
+            if rej:
+                print(f"{src}: {len(rej)} row(s) rejected at entry, e.g. {rej[0]}")
+        print(f"wrote {a.out} - next: facility_engineer and head_grower review and sign off")
+    else:
+        from .governance.readiness import check_readiness, default_artifacts, record_signoff
+        arts = default_artifacts(a.calibration if Path(a.calibration).exists() else None, a.regulatory)
+        if a.command == "signoff":
+            rec = record_signoff(a.signoffs, a.item, a.name, a.role, a.statement, arts)
+            print(f"recorded: {rec['item']} by {rec['name']} ({rec['role']}) on {rec['date']}, "
+                  f"fingerprint {rec['sha256'][:16]}")
+        report = check_readiness(a.signoffs, arts)
+        print(report.summary())
+        return 0 if report.ready else 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
