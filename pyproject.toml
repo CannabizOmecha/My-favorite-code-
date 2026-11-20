@@ -11,7 +11,7 @@ dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
 llm = ["anthropic>=1.0"]
-dev = ["pytest>=8"]
+dev = ["pytest>=9.2.0"]
 
 [project.scripts]
 intelligent-plant = "intelligent_plant.__main__:main"
