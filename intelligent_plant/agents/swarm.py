@@ -17,6 +17,7 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from ..data.privacy import scrub_identifiers
 from ..data.store import Provenance
 from ..governance.autonomy import ApprovalRequest, Autonomy, policy_for
 from ..governance.ethics import LexicographicPolicy
@@ -224,9 +225,17 @@ class LLMJuryCritic(Critic):
     async def critique(self, p: Proposal, ctx: Context) -> list[Objection]:
         if not ctx.llm or not ctx.llm.available:
             return []
-        prompt = (f"Review this proposal from agent '{p.agent}' for task '{p.task}'.\n<data>\n"
-                  f"summary: {p.summary}\npayload: {p.payload}\nevidence: {p.evidence}\n"
-                  f"uncertainty: {p.uncertainty}\n</data>\n"
+        patient_scoped = "patient_id" in p.payload
+        if patient_scoped:
+            # Pseudonymised patient data is still protected health information. It may go to an outside
+            # model only under a signed Business Associate Agreement, and then only the minimum necessary:
+            # the scrubbed summary and evidence, never the payload (medications, side effects, scores).
+            if not ctx.config.get("privacy", {}).get("phi_to_llm_permitted", False):
+                return []
+            body = f"summary: {scrub_identifiers(p.summary)}\nevidence: {p.evidence}\nuncertainty: {p.uncertainty}"
+        else:
+            body = f"summary: {p.summary}\npayload: {p.payload}\nevidence: {p.evidence}\nuncertainty: {p.uncertainty}"
+        prompt = (f"Review this proposal from agent '{p.agent}' for task '{p.task}'.\n<data>\n{body}\n</data>\n"
                   'Return {"severity": "none" | "warn", "message": "<one sentence>"}.')
         r = await ctx.llm.complete_json(GROUNDING + "\nPersona: " + JURY_PERSONAS[self.persona], prompt)
         if r and r.get("severity") == "warn":

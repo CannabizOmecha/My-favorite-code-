@@ -114,23 +114,29 @@ class IrrigationAgent(Agent):
 class NutrientAgent(Agent):
     name, domain = "nutrients", "cultivation"
 
+    def __init__(self) -> None:
+        self.ec_range = dict(EC_RANGE)
+        self.ph_range = {s: PH_RANGE for s in EC_RANGE}
+        self.source = "typical practice (uncalibrated)"
+
     async def propose(self, ctx: Context) -> list[Proposal]:
         out = []
         for room_id, room in ctx.observations.get("rooms", {}).items():
             stage = room.get("stage", "vegetative")
             ec, ph = room.get("ec"), room.get("ph")
             issues = []
-            if ec is not None and not EC_RANGE[stage][0] <= ec <= EC_RANGE[stage][1]:
-                issues.append(f"EC {ec} outside {EC_RANGE[stage]}")
-            if ph is not None and not PH_RANGE[0] <= ph <= PH_RANGE[1]:
-                issues.append(f"pH {ph} outside {PH_RANGE}")
+            ecr, phr = self.ec_range[stage], self.ph_range[stage]
+            if ec is not None and not ecr[0] <= ec <= ecr[1]:
+                issues.append(f"EC {ec} outside {ecr}")
+            if ph is not None and not phr[0] <= ph <= phr[1]:
+                issues.append(f"pH {ph} outside {phr}")
             if issues:
                 out.append(Proposal(self.name, "nutrient_recipe", f"{room_id}: " + "; ".join(issues) +
                                     ". Recommend recipe correction.",
                                     {"room_id": room_id, "ec": ec, "ph": ph, "stage": stage},
                                     {"safety": 0.3, "accuracy": 0.6}, ["Table 8.2: recommend; human approves",
                                                                        "Ch 10.3 closed-loop fertigation"],
-                                    uncertainty="Ranges are typical practice; tune to cultivar and substrate."))
+                                    uncertainty=f"Ranges: {self.source}."))
         return out
 
 

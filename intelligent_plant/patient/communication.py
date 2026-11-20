@@ -11,45 +11,28 @@ Principles ("the person at the end of the supply chain is the reason the chain e
 """
 from __future__ import annotations
 
+import json
 import re
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
+from importlib import resources
+from pathlib import Path
 
-URGENT_HELP = ("Get help right away (call 911) for chest pain, fainting, trouble breathing, or severe "
-               "confusion. If a child may have eaten a cannabis product, call 911 or Poison Control at "
-               "1-800-222-1222 now.")
+def load_message_catalog(path: str | Path | None = None) -> dict:
+    """The reviewed wording lives in config/patient_messages.json, not in code, so clinicians and patients
+    can review and edit it, and so a sign-off can be bound to exactly the text that was approved."""
+    if path:
+        return json.loads(Path(path).read_text())
+    return json.loads(resources.files("intelligent_plant.config").joinpath("patient_messages.json").read_text())
 
+
+CATALOG = load_message_catalog()
+URGENT_HELP: str = CATALOG["urgent_help"]
 # event key -> (urgency, patient-facing text). {fields} are filled from the payload.
-TEMPLATES: dict[str, tuple[str, str]] = {
-    "oral_redose": ("urgent",
-                    "We noticed a second dose by mouth soon after the first. Edibles, oils and capsules can take "
-                    "2 hours or more to work, so taking more too soon can make you feel very unwell later. "
-                    "Please do not take any more today. Rest somewhere safe and do not drive. Your care team has "
-                    "been told."),
-    "adverse_effect": ("urgent",
-                       "You logged {effects}. Thank you for writing it down. Please do not take your next dose until "
-                       "your care team contacts you. They have been told and will help you decide what to do next."),
-    "multiple_changes": ("routine",
-                         "It looks like more than one thing changed at once (for example the product, the amount or "
-                         "how you take it). Changing one thing at a time helps you and your care team see what is "
-                         "really helping."),
-    "missing_log_fields": ("routine",
-                           "A few details were missing from your recent log ({fields}). Writing them down before each "
-                           "dose takes a minute and helps your care team tailor your plan to you."),
-    "medication_check": ("routine",
-                         "One of your other medicines can interact with cannabis products. Your pharmacist and care "
-                         "team have been told and may adjust your plan. Please keep taking your medicines as prescribed "
-                         "unless they tell you otherwise."),
-    "progress_summary": ("routine", "{summary}"),
-}
-
-PLAIN_FIELD_NAMES = {"timestamp": "time", "product_id": "product", "batch_lot": "batch number",
-                     "total_thc_unit": "THC per unit", "total_cbd_unit": "CBD per unit", "dose_units": "amount taken",
-                     "dose_mg_thc": "THC amount", "dose_mg_cbd": "CBD amount", "route": "how you took it",
-                     "score_pre": "symptom score before", "score_post": "symptom score after",
-                     "interval_min": "time between scores"}
+TEMPLATES: dict[str, tuple[str, str]] = {k: (v["urgency"], v["text"]) for k, v in CATALOG["messages"].items()}
+PLAIN_FIELD_NAMES: dict[str, str] = CATALOG["plain_field_names"]
 
 
 def _syllables(word: str) -> int:

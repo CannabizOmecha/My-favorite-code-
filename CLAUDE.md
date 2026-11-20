@@ -26,6 +26,13 @@ are ethical obligations. They never override a safety rule.
 - Models learn only from measured outcomes, abstain when degraded, and disclose uncertainty.
 - Genetic and behavioural data are for harm reduction, never gatekeeping or stigma (Ch 4.5).
 
+- Production mode (`governance/readiness.py`) refuses to start until the clinical lead, patient reviewers,
+  facility engineer, head grower, counsel and privacy officer have signed off on the exact artifacts in use.
+  Never add a bypass flag, never record a sign-off on someone's behalf, and never weaken a calibration
+  refusal to make bad data fit. See `docs/GO_LIVE.md`.
+- Pseudonymised patient data is still PHI: it never goes to an outside model without a BAA, and then only
+  the minimum necessary.
+
 ## Working in this repo
 
 - CI (`.github/workflows/tests.yml`) runs the full suite on Python 3.10–3.13 plus a build-and-install check on every

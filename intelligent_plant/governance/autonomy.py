@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import threading
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from enum import IntEnum
 from typing import Any
@@ -108,16 +108,39 @@ class ApprovalRequest:
 
 class ApprovalQueue:
     """Human authority. Overrides are recorded with the outcome so they feed
-    back into evaluation (Chapter 16.3: 'override is easy and respected')."""
+    back into evaluation (Chapter 16.3: 'override is easy and respected').
 
-    def __init__(self) -> None:
+    With a store, every request and every decision is appended to the hash-chained record store and pending
+    requests are reloaded on start-up: a queued safety decision for a clinician must survive a restart."""
+
+    def __init__(self, store: Any = None) -> None:
         self._items: dict[str, ApprovalRequest] = {}
         self._lock = threading.Lock()
         self.overrides: list[dict[str, Any]] = []
+        self._store = store
+        if store is not None:
+            names = {f.name for f in fields(ApprovalRequest)}
+            for rec in store.all("approval"):
+                req = ApprovalRequest(**{k: v for k, v in rec.items() if k in names})
+                self._items[req.request_id] = req
+                if req.status == "rejected":
+                    self.overrides.append({"request_id": req.request_id, "task": req.task, "by": req.decided_by,
+                                           "note": req.note})
+
+    def _persist(self, req: ApprovalRequest, first: bool) -> None:
+        if self._store is None:
+            return
+        from ..data.store import Provenance
+        prov = Provenance(source="approval_queue", operator=req.decided_by or "swarm")
+        if first:
+            self._store.append("approval", asdict(req), prov)
+        else:
+            self._store.correct("approval", asdict(req), prov, reason_code="HUMAN_DECISION")
 
     def submit(self, req: ApprovalRequest) -> ApprovalRequest:
         with self._lock:
             self._items[req.request_id] = req
+            self._persist(req, first=True)
         return req
 
     def pending(self, role: str | None = None) -> list[ApprovalRequest]:
@@ -127,8 +150,11 @@ class ApprovalQueue:
         r = self._items[request_id]
         if role != r.owner_role:
             raise PermissionError(f"{role} is not the accountable owner ({r.owner_role}) for {r.task}")
+        if r.status != "pending":
+            raise ValueError(f"Request {request_id} was already {r.status} by {r.decided_by}.")
         r.status = "approved" if approve else "rejected"
         r.decided_by, r.note = by, note
+        self._persist(r, first=False)
         if not approve:
             self.overrides.append({"request_id": request_id, "task": r.task, "by": by, "note": note})
         return r

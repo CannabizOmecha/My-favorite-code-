@@ -14,7 +14,7 @@ of Chapter 16 are code here, and the worked examples in the book are regression 
 pip install -e ".[dev]"          # numpy + pytest; add [llm] for Claude reasoning
 python -m intelligent_plant demo # one autonomous cycle over a SYNTHETIC facility, clinic and supply chain
 python -m intelligent_plant quantum  # superposition, entanglement, VQE, Grover, QAOA benchmarks
-pytest                           # 92 tests: Appendix A worked examples + safety invariants
+pytest                           # 115 tests: Appendix A worked examples + safety invariants
 ```
 
 ## Architecture
@@ -130,6 +130,13 @@ everything falls back to deterministic logic.
 LIMS (COAs), your state track-and-trace system, the patient app and regulatory feeds produce that dict. The
 actuators in `orchestrator.py` are where writes go back out. Observation keys are documented at the top of each
 `agents/*.py` module.
+
+## Going live
+
+See **[`docs/GO_LIVE.md`](docs/GO_LIVE.md)**. Three steps need people: the patient message review
+(`intelligent-plant review-pack`), facility calibration (`intelligent-plant calibrate`) and the
+regulatory, legal and privacy review ([`docs/REGULATORY_REVIEW.md`](docs/REGULATORY_REVIEW.md)). Production mode refuses to start until each one is signed off
+against the exact content reviewed (`intelligent-plant readiness`).
 
 ## Before production use
 
