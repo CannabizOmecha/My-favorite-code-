@@ -55,12 +55,16 @@ class MoEResult:
 class MixtureOfExperts:
     def __init__(self, experts: list[Expert], top_k: int = 4, temperature: float = 0.5,
                  always_consult: tuple[str, ...] = ()):
+        if temperature <= 0:
+            raise ValueError("temperature must be > 0")
         self.experts = {e.name: e for e in experts}
         self.reliability = {e.name: 1.0 for e in experts}
         self.top_k, self.temperature = top_k, temperature
         self.always_consult = tuple(always_consult)     # ordered: results must not depend on hash seeds
 
     def gate(self, query: dict) -> dict[str, float]:
+        if not self.experts:
+            return {}
         logits = {n: (e.relevance(query) * math.log1p(self.reliability[n] * math.e)) / self.temperature
                   for n, e in self.experts.items()}
         mx = max(logits.values())
@@ -97,9 +101,10 @@ class MixtureOfExperts:
                 continue
             votes: dict[str, float] = {}
             for o in ops:
-                votes[o.recommendation] = votes.get(o.recommendation, 0.0) + w[o.expert] * o.confidence
+                votes[o.recommendation] = votes.get(o.recommendation, 0.0) + w.get(o.expert, 0.0) * o.confidence
             rec = max(votes, key=votes.get)
-            answers[q] = (rec, votes[rec] / sum(votes.values()))
+            total = sum(votes.values())
+            answers[q] = (rec, votes[rec] / total if total > 0 else 0.0)
         return MoEResult(answers, list(dict.fromkeys(flags)), opinions, chosen, abstained, w)
 
     def answer(self, result: MoEResult, question: str) -> str | None:

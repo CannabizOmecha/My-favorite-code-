@@ -24,7 +24,8 @@ PH_RANGE = (5.6, 6.4)
 
 def _cal_ok(reading: dict, today: date) -> bool:
     due = reading.get("sensor_cal_due")
-    return bool(due) and date.fromisoformat(due) >= today
+    # Due today counts as overdue, matching CalibrationWatchdog (conservative).
+    return bool(due) and date.fromisoformat(due) > today
 
 
 class CalibrationWatchdog(Agent):

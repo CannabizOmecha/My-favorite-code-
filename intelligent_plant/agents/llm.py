@@ -86,14 +86,16 @@ class ClaudeReasoner:
 
 
 def parse_json_object(text: str) -> dict | None:
-    m = re.search(r"\{.*\}", text, re.S)
-    if not m:
-        return None
-    try:
-        obj = json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return None
-    return obj if isinstance(obj, dict) else None
+    """First JSON object in the text (tolerates prose or several objects around it)."""
+    dec = json.JSONDecoder()
+    for m in re.finditer(r"\{", text):
+        try:
+            obj, _ = dec.raw_decode(text, m.start())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None
 
 
 GROUNDING = (

@@ -259,3 +259,83 @@ def test_deployment_gate_and_rollback():
 def test_maturity_is_sequential():
     lvl, _, _ = assess_maturity(True, False, True, True, True, True, True, True)
     assert lvl == 1   # cannot claim predictive capability on ungoverned data
+
+
+# ------------------------------------------------------------------ swarm-review regressions (agents)
+@pytest.mark.parametrize("payload", [{"advice": {"dose_mg": 5}}, {"dose_mg_thc": 5}, {"next_dose_mg": 10},
+                                     {"steps": [{"starting_dose_mg": 2.5}]}])
+def test_dose_numbers_are_vetoed_at_any_depth_and_name(payload):
+    p = Proposal("rogue", "patient_reminder", "remind", payload)
+    assert run(Swarm([OneShot(p)], default_critics(False)).cycle(ctx())).dispositions[0].outcome == "vetoed"
+
+
+def test_self_declared_clinician_agent_cannot_originate_doses():
+    p = Proposal("clinician", "titration_step", "increase", {"dose_mg": 10}, uncertainty="x", evidence=["e"])
+    assert run(Swarm([OneShot(p)], default_critics(False)).cycle(ctx())).dispositions[0].outcome == "vetoed"
+
+
+def test_failing_actuator_alarms_and_still_logs():
+    def boom(p, c):
+        raise ConnectionError("pager offline")
+    p = Proposal("ok", "data_logging", "log")
+    c = ctx()
+    r = run(Swarm([OneShot(p)], default_critics(False), actuators={"data_logging": boom}).cycle(c))
+    assert r.dispositions[0].outcome == "actuation_failed"
+    assert any(a["level"] == "alarm" for a in c.alerts)
+    assert c.store.verify_chain()[0] and {d["disposition"] for d in c.store.all("decision")} == {"actuation_failed"}
+
+
+def test_crashed_safety_expert_blocks_product_recommendation():
+    """A safety screen that crashes has not cleared the patient (fail closed)."""
+    ent = IntelligentEnterprise(use_llm=False)
+    pt = {"status": "new_consult", "indication": "chronic_pain_adult", "standard_care_tried": True,
+          "profile": PatientRiskProfile(age=None, pregnant_or_lactating=True)}
+    from intelligent_plant.simulation import make_coa
+    cat = [{"product_id": "PR-OIL-20", "form": "tincture", "route": "oral", "unit_mg_thc": 0.5, "unit_mg_cbd": 10.0,
+            "coa": make_coa("C-101F", "B-101", 0.02, 0.0, 1.1, 0.0, form="tincture", finished=True),
+            "batch_cv": 0.05, "available_months": 12}]
+    out = run(ConsultationAgent().propose(ent.context({"patients": {"P1": pt}, "product_catalog": cat})))
+    report = next(p for p in out if p.task == "consultation_report")
+    assert any("unassessed" in f for f in report.payload["flags"])
+    assert not any(p.task == "product_recommendation" for p in out)
+
+
+def test_one_bad_patient_record_does_not_silence_others():
+    from intelligent_plant.agents.clinical import TitrationMonitorAgent
+    plan = TitrationPlan("A", "dr", ["clinician step 1"], 24, 42, 2.0, NOW)
+    good_logs = [{"timestamp": "2026-11-17T14:00:00+00:00", "route": "oral", "product_id": "X", "dose_units": 1},
+                 {"timestamp": "2026-11-17T14:45:00+00:00", "route": "oral", "product_id": "X", "dose_units": 1,
+                  "adverse_effects": [{"name": "dizziness", "severity": "Severe"}]}]
+    pts = {"A": {"plan": plan, "logs": good_logs, "profile": PatientRiskProfile(age=40)},
+           "B": {"plan": plan, "logs": [{"timestamp": "2026-11-2 10:00"}, {"timestamp": "bad"}],
+                 "profile": PatientRiskProfile(age=40)}}
+    out = run(TitrationMonitorAgent().propose(ent_ctx({"patients": pts})))
+    a_alerts = {p.payload.get("patient_event") for p in out if p.payload.get("patient_id") == "A"}
+    assert {"oral_redose", "adverse_effect"} <= a_alerts            # "Severe" (capitalised) still counts
+    assert any(p.payload.get("patient_id") == "B" and p.task == "safety_alert" for p in out)
+
+
+def ent_ctx(obs):
+    return IntelligentEnterprise(use_llm=False).context(obs)
+
+
+def test_moe_zero_confidence_does_not_crash_or_drop_flags():
+    from intelligent_plant.agents.moe import Expert, ExpertOpinion, MixtureOfExperts
+
+    class Zero(Expert):
+        name, keywords = "zero", ("x",)
+
+        async def opine(self, q, c):
+            return ExpertOpinion(self.name, "yes", 0.0, ["[STOP] keep me"], question="q")
+    moe = MixtureOfExperts([Zero()])
+    res = run(moe.consult({"a": "x"}, ctx()))
+    assert res.answers["q"] == ("yes", 0.0) and "[STOP] keep me" in res.flags
+    assert MixtureOfExperts([]).gate({}) == {}
+    with pytest.raises(ValueError):
+        MixtureOfExperts([Zero()], temperature=0)
+
+
+def test_parse_json_object_takes_first_object():
+    from intelligent_plant.agents.llm import parse_json_object
+    assert parse_json_object('ok {"severity": "warn", "message": "a"} and {"b": 1}') == {"severity": "warn",
+                                                                                         "message": "a"}

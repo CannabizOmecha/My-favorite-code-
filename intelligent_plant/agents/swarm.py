@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class Disposition:
     proposal: Proposal
-    outcome: str          # executed | executed_with_alarm | executed_notify | queued | info | vetoed | refused | superseded
+    outcome: str          # executed | executed_with_alarm | executed_notify | queued | info | vetoed | refused | superseded | actuation_failed
     objections: list[Objection] = field(default_factory=list)
     detail: str = ""
 
@@ -75,7 +75,9 @@ class Swarm:
         objections: dict[str, list[Objection]] = defaultdict(list)
         for (p, c), r in zip(crit_jobs, crit_results):
             if isinstance(r, BaseException):
-                objections[p.id].append(Objection(c.name, p.id, "warn", f"critic failed: {r}"))
+                # A deterministic safety critic that cannot run has not cleared the proposal: fail closed.
+                sev = "veto" if isinstance(c, SafetyCritic) else "warn"
+                objections[p.id].append(Objection(c.name, p.id, sev, f"critic failed: {r}"))
             else:
                 objections[p.id].extend(r)
 
@@ -122,7 +124,9 @@ class Swarm:
             return Disposition(p, "refused", obs, f"{p.task} is reserved to a human ({pol.owner_role}).")
         warned = [o for o in obs if o.severity == "warn"]
         if pol.autonomy.executes_without_human and not warned:
-            self._actuate(p, ctx)
+            err = self._actuate(p, ctx)
+            if err:
+                return Disposition(p, "actuation_failed", obs, err)
             if pol.autonomy == Autonomy.AUTOMATE_WITH_ALARMS and p.payload.get("alarm"):
                 ctx.alert("alarm", p.agent, p.payload["alarm"])
                 return Disposition(p, "executed_with_alarm", obs)
@@ -140,10 +144,18 @@ class Swarm:
         detail = "Escalated by critic warnings." if warned and pol.autonomy.executes_without_human else ""
         return Disposition(p, "queued", obs, detail)
 
-    def _actuate(self, p: Proposal, ctx: Context) -> None:
+    def _actuate(self, p: Proposal, ctx: Context) -> str | None:
+        """Run the actuator. A failure is never silent and never aborts the cycle (the audit
+        log must still be written); a human is alarmed and the action is reported as not done."""
         act = self.actuators.get(p.task)
         if act:
-            act(p, ctx)
+            try:
+                act(p, ctx)
+            except Exception as e:
+                msg = f"Actuator for {p.task} failed ({type(e).__name__}: {e}); not done, human action required."
+                ctx.alert("alarm", "governance", f"{msg} {p.summary}")
+                return msg
+        return None
 
     def _log(self, d: Disposition, ctx: Context) -> None:
         p = d.proposal
@@ -156,6 +168,25 @@ class Swarm:
 
 
 # ---------------------------------------------------------------- critics
+_DOSE_KEY_PARTS = ("dose_mg", "starting_dose", "next_dose", "dose_step", "mg_per_dose", "dose_amount")
+
+
+def _originates_dose(o) -> bool:
+    """True if a payload (at any depth) carries a dose number. Patient-log fields such as
+    dose_mg_thc are records of what the patient took and live in the store, never in proposals."""
+    if isinstance(o, dict):
+        for k, v in o.items():
+            key = str(k).lower()
+            if any(part in key for part in _DOSE_KEY_PARTS) or key in {"dose", "mg"}:
+                return True
+            if _originates_dose(v):
+                return True
+        return False
+    if isinstance(o, (list, tuple, set)):
+        return any(_originates_dose(x) for x in o)
+    return False
+
+
 class SafetyCritic(Critic):
     """Deterministic. Vetoes anything that lowers safety below baseline or
     lacks uncertainty disclosure on a clinical recommendation."""
@@ -167,7 +198,7 @@ class SafetyCritic(Critic):
             out.append(Objection(self.name, p.id, "veto", "Introduces risk beyond baseline (Safety first)."))
         if p.task in {"product_recommendation", "titration_step", "consultation_report"} and not p.uncertainty:
             out.append(Objection(self.name, p.id, "veto", "Clinical output without stated uncertainty."))
-        if any(k in p.payload for k in ("dose_mg", "starting_dose_mg")) and p.agent != "clinician":
+        if _originates_dose(p.payload):   # no self-declared exemption: agents never originate doses
             out.append(Objection(self.name, p.id, "veto", "Agents may not originate dose numbers."))
         return out
 
@@ -229,7 +260,7 @@ class LLMJuryCritic(Critic):
                   f"uncertainty: {p.uncertainty}\n</data>\n"
                   'Return {"severity": "none" | "warn", "message": "<one sentence>"}.')
         r = await ctx.llm.complete_json(GROUNDING + "\nPersona: " + JURY_PERSONAS[self.persona], prompt)
-        if r and r.get("severity") == "warn":
+        if r and str(r.get("severity", "")).strip().lower() == "warn":
             return [Objection(self.name, p.id, "warn", str(r.get("message", ""))[:500])]
         return []
 

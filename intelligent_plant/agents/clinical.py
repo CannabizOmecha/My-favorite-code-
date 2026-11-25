@@ -41,7 +41,12 @@ SCOPE = ("Adults (>=18) with an indication in the curated evidence map, under a 
 
 LOG_FIELDS = ("timestamp", "product_id", "batch_lot", "total_thc_unit", "total_cbd_unit", "dose_units",
               "dose_mg_thc", "dose_mg_cbd", "route", "score_pre", "score_post", "interval_min")
-SEVERE = {"moderate", "severe"}
+SEVERE = {"moderate", "severe", "serious", "life_threatening", "life-threatening"}
+
+
+def _is_severe(a: dict) -> bool:
+    """Severity from patient logs is free text: normalise case/whitespace so "Severe" counts."""
+    return str(a.get("severity", "")).strip().lower() in SEVERE
 
 
 @dataclass
@@ -202,7 +207,17 @@ def clinical_moe() -> MixtureOfExperts:
                RouteExpert(), HarmsExpert(), ProductMatchExpert()]
     # Safety-relevant experts are consulted on EVERY case regardless of the gate.
     return MixtureOfExperts(experts, top_k=3, always_consult=("evidence", "contraindications", "interactions",
-                                                              "harms", "route"))
+                                                              "pharmacogenomics", "harms", "route"))
+
+
+def _patient_error(agent: str, pid: str, e: Exception) -> Proposal:
+    """A patient's record could not be processed: the care team must hear about it (never silent)."""
+    return Proposal(agent, "safety_alert",
+                    f"Patient {pid}: record could not be checked ({type(e).__name__}: {e}). "
+                    f"Safety checks for this patient did not run; review the record now.",
+                    {"patient_id": pid, "notify": ["treating_clinician"], "error": type(e).__name__},
+                    {"safety": 1.0}, ["fail-safe: unprocessable patient record"],
+                    target=f"patient:{pid}:processing_error")
 
 
 # ---------------------------------------------------------------- agents
@@ -216,58 +231,68 @@ class ConsultationAgent(Agent):
     async def propose(self, ctx: Context) -> list[Proposal]:
         out = []
         for pid, pt in ctx.observations.get("patients", {}).items():
-            if pt.get("status") != "new_consult":
-                continue
-            q = {"patient_id": pid, "indication": pt["indication"], "profile": pt["profile"],
-                 "standard_care_tried": pt.get("standard_care_tried", False),
-                 "onset_need": pt.get("onset_need", "sustained"), "food_relation": pt.get("food_relation"),
-                 "medications": pt["profile"].medications, "preferences": pt.get("preferences", {})}
-            first = await self.moe.consult(q, ctx)
-            route = self.moe.answer(first, "route") or "oral"
-            gate = self.moe.answer(first, "trial")
-            prod = await self.moe.experts["product_match"].opine({**q, "route_hint": route}, ctx)
-            stops = [f for f in first.flags if f.startswith("[STOP]") or f.startswith("OUT OF SCOPE")]
-            ev = next(o for o in first.opinions if o.expert == "evidence")
-            for o in first.opinions:
-                if o.expert == "interactions":
-                    for a in o.findings["alerts"]:
-                        out.append(Proposal(self.name, "interaction_alert",
-                                            f"Patient {pid}: {a['message']} Action: {a['action']}",
-                                            {"patient_id": pid, **a}, {"safety": 1.0},
-                                            [f"refs {a['refs']}"], target=f"patient:{pid}:ddi:{a['rule_id']}"))
-            sequence = {
-                "0_patient_priorities": {"goals": pt.get("preferences", {}).get("goals", []),
-                                         "preferences": pt.get("preferences", {}),
-                                         "note": "Start the conversation here: what matters most to this patient."},
-                "1_indication_and_evidence": ev.findings | {"recommendation": gate},
-                "2_contraindications": [f for f in first.flags if "]" in f and "DDI" not in f],
-                "3_interactions": [f for f in first.flags if "DDI" in f],
-                "4_route": route,
-                "5_product": prod.findings if prod else {},
-                "6_titration": "Clinician sets starting dose, increments and ceiling from a published protocol "
-                               "(ref 140); start low, go slow, CBD first.",
-                "7_outcomes_review_stopping_rule": "Define validated instrument, review at 4-6 weeks and the "
-                                                   "benefit threshold BEFORE starting.",
-            }
-            out.append(Proposal(self.name, "consultation_report",
-                                f"Patient {pid} ({pt['indication']}): {gate or 'n/a'}; "
-                                f"{len(stops)} stop/out-of-scope flag(s); route {route}.",
-                                {"patient_id": pid, "sequence": sequence, "flags": first.flags,
-                                 "experts_consulted": first.consulted, "abstained": first.abstained,
-                                 "gate_weights": first.gate_weights, "scope": SCOPE},
-                                {"safety": 0.8, "accuracy": 0.7}, [e for o in first.opinions for e in o.evidence],
-                                uncertainty="Decision support only. Evidence grade: " + ev.findings["grade"] +
-                                            ". Most cannabinoid combinations have never been studied.",
-                                target=f"patient:{pid}:consult"))
-            if not stops and gate == "trial_reasonable" and prod and prod.recommendation:
-                out.append(Proposal(self.name, "product_recommendation",
-                                    f"Patient {pid}: candidate product {prod.recommendation} (route {route}); "
-                                    f"clinician selects and sets dose.",
-                                    {"patient_id": pid, "product_id": prod.recommendation,
-                                     "alternatives": prod.findings["ranked"][1:3]},
-                                    {"safety": 0.6, "accuracy": 0.6}, prod.evidence + ev.evidence,
-                                    uncertainty="Terpene profile is a consistency fingerprint, not a predictor of "
-                                                "effect (Ch 7.3).", target=f"patient:{pid}:product"))
+            try:
+                out += await self._consult_one(pid, pt, ctx)
+            except Exception as e:   # one bad record must not silence other patients (fail safe, loudly)
+                out.append(_patient_error(self.name, pid, e))
+        return out
+
+    async def _consult_one(self, pid: str, pt: dict, ctx: Context) -> list[Proposal]:
+        out: list[Proposal] = []
+        if pt.get("status") != "new_consult":
+            return out
+        q = {"patient_id": pid, "indication": pt["indication"], "profile": pt["profile"],
+             "standard_care_tried": pt.get("standard_care_tried", False),
+             "onset_need": pt.get("onset_need", "sustained"), "food_relation": pt.get("food_relation"),
+             "medications": pt["profile"].medications, "preferences": pt.get("preferences", {})}
+        first = await self.moe.consult(q, ctx)
+        route = self.moe.answer(first, "route") or "oral"
+        gate = self.moe.answer(first, "trial")
+        prod = await self.moe.experts["product_match"].opine({**q, "route_hint": route}, ctx)
+        # A safety expert that crashed has NOT cleared the patient: treat it as a stop (fail closed).
+        stops = [f for f in first.flags if f.startswith("[STOP]") or f.startswith("OUT OF SCOPE")
+                 or (f.startswith("Expert ") and "unassessed" in f)]
+        ev = next(o for o in first.opinions if o.expert == "evidence")
+        for o in first.opinions:
+            if o.expert == "interactions":
+                for a in o.findings["alerts"]:
+                    out.append(Proposal(self.name, "interaction_alert",
+                                        f"Patient {pid}: {a['message']} Action: {a['action']}",
+                                        {"patient_id": pid, **a}, {"safety": 1.0},
+                                        [f"refs {a['refs']}"], target=f"patient:{pid}:ddi:{a['rule_id']}"))
+        sequence = {
+            "0_patient_priorities": {"goals": pt.get("preferences", {}).get("goals", []),
+                                     "preferences": pt.get("preferences", {}),
+                                     "note": "Start the conversation here: what matters most to this patient."},
+            "1_indication_and_evidence": ev.findings | {"recommendation": gate},
+            "2_contraindications": [f for f in first.flags if "]" in f and "DDI" not in f],
+            "3_interactions": [f for f in first.flags if "DDI" in f],
+            "4_route": route,
+            "5_product": prod.findings if prod else {},
+            "6_titration": "Clinician sets starting dose, increments and ceiling from a published protocol "
+                           "(ref 140); start low, go slow, CBD first.",
+            "7_outcomes_review_stopping_rule": "Define validated instrument, review at 4-6 weeks and the "
+                                               "benefit threshold BEFORE starting.",
+        }
+        out.append(Proposal(self.name, "consultation_report",
+                            f"Patient {pid} ({pt['indication']}): {gate or 'n/a'}; "
+                            f"{len(stops)} stop/out-of-scope flag(s); route {route}.",
+                            {"patient_id": pid, "sequence": sequence, "flags": first.flags,
+                             "experts_consulted": first.consulted, "abstained": first.abstained,
+                             "gate_weights": first.gate_weights, "scope": SCOPE},
+                            {"safety": 0.8, "accuracy": 0.7}, [e for o in first.opinions for e in o.evidence],
+                            uncertainty="Decision support only. Evidence grade: " + ev.findings["grade"] +
+                                        ". Most cannabinoid combinations have never been studied.",
+                            target=f"patient:{pid}:consult"))
+        if not stops and gate == "trial_reasonable" and prod and prod.recommendation:
+            out.append(Proposal(self.name, "product_recommendation",
+                                f"Patient {pid}: candidate product {prod.recommendation} (route {route}); "
+                                f"clinician selects and sets dose.",
+                                {"patient_id": pid, "product_id": prod.recommendation,
+                                 "alternatives": prod.findings["ranked"][1:3]},
+                                {"safety": 0.6, "accuracy": 0.6}, prod.evidence + ev.evidence,
+                                uncertainty="Terpene profile is a consistency fingerprint, not a predictor of "
+                                            "effect (Ch 7.3).", target=f"patient:{pid}:product"))
         return out
 
 
@@ -289,39 +314,47 @@ class TitrationMonitorAgent(Agent):
         mu, tau, sigma = population_hyperparameters(all_impr) if any(all_impr) else (0.0, 2.0, 2.0)
         out = []
         for pid, pt in patients.items():
-            plan: TitrationPlan | None = pt.get("plan")
-            logs = sorted(pt.get("logs", []), key=lambda l: l["timestamp"])
-            if not plan or plan.phase == "stopped":
-                continue
-            out += self._log_quality(pid, logs)
-            out += self._rule_checks(pid, logs)
-            if pt.get("meds_changed"):
-                for a in check_interactions(pt["profile"].medications, {"CBD", "THC"}):
-                    out.append(Proposal(self.name, "interaction_alert",
-                                        f"Patient {pid} medication change: {a.message} Action: {a.action}",
-                                        {"patient_id": pid, **a.__dict__, "patient_event": "medication_check",
-                                         "notify": ["treating_clinician", "pharmacist", "patient"]},
-                                        {"safety": 1.0}, [f"refs {a.refs}"],
-                                        target=f"patient:{pid}:ddi:{a.rule_id}"))
-            last = pt.get("last_summary_at")
-            if logs and (last is None or ctx.now - last >= timedelta(days=7)):
-                goals = pt.get("preferences", {}).get("goals") or [None]
-                out.append(Proposal(self.name, "patient_progress_summary",
-                                    f"Patient {pid}: weekly progress summary sent to the patient.",
-                                    {"patient_id": pid, "notify": ["patient"], "patient_event": "progress_summary",
-                                     "summary": progress_summary(logs, goals[0])},
-                                    {"safety": 0.2, "ethics": 0.6, "accuracy": 0.5}, ["Ch 13.3 patient log"],
-                                    target=f"patient:{pid}:summary"))
-            impr = self._improvements(logs)
-            est = partial_pool(impr, mu, tau, sigma, min_n=self.min_records)
-            out += self._step_logic(pid, plan, logs, est, ctx.now)
-            if len(logs) >= 30 and not plan.n_of_1_enrolled and plan.phase == "maintenance":
-                out.append(Proposal(self.name, "n_of_1_enrolment",
-                                    f"Patient {pid}: {len(logs)} records on a stable regimen. Offer a randomised, "
-                                    f"blinded N-of-1 trial to test the benefit within this patient.",
-                                    {"patient_id": pid, "schedule": n_of_1_schedule(4)},
-                                    {"accuracy": 1.0, "safety": 0.2}, ["Ch 5.4 (ref 98)", "Ch 13.3"],
-                                    uncertainty="Requires a stable condition and a rapidly reversible treatment."))
+            try:
+                out += self._monitor_one(pid, pt, ctx, mu, tau, sigma)
+            except Exception as e:   # one bad record must not silence other patients (fail safe, loudly)
+                out.append(_patient_error(self.name, pid, e))
+        return out
+
+    def _monitor_one(self, pid: str, pt: dict, ctx: Context, mu: float, tau: float, sigma: float) -> list[Proposal]:
+        out: list[Proposal] = []
+        plan: TitrationPlan | None = pt.get("plan")
+        logs = sorted(pt.get("logs", []), key=lambda l: l["timestamp"])
+        if not plan or plan.phase == "stopped":
+            return out
+        out += self._log_quality(pid, logs)
+        out += self._rule_checks(pid, logs)
+        if pt.get("meds_changed"):
+            for a in check_interactions(pt["profile"].medications, {"CBD", "THC"}):
+                out.append(Proposal(self.name, "interaction_alert",
+                                    f"Patient {pid} medication change: {a.message} Action: {a.action}",
+                                    {"patient_id": pid, **a.__dict__, "patient_event": "medication_check",
+                                     "notify": ["treating_clinician", "pharmacist", "patient"]},
+                                    {"safety": 1.0}, [f"refs {a.refs}"],
+                                    target=f"patient:{pid}:ddi:{a.rule_id}"))
+        last = pt.get("last_summary_at")
+        if logs and (last is None or ctx.now - last >= timedelta(days=7)):
+            goals = pt.get("preferences", {}).get("goals") or [None]
+            out.append(Proposal(self.name, "patient_progress_summary",
+                                f"Patient {pid}: weekly progress summary sent to the patient.",
+                                {"patient_id": pid, "notify": ["patient"], "patient_event": "progress_summary",
+                                 "summary": progress_summary(logs, goals[0])},
+                                {"safety": 0.2, "ethics": 0.6, "accuracy": 0.5}, ["Ch 13.3 patient log"],
+                                target=f"patient:{pid}:summary"))
+        impr = self._improvements(logs)
+        est = partial_pool(impr, mu, tau, sigma, min_n=self.min_records)
+        out += self._step_logic(pid, plan, logs, est, ctx.now)
+        if len(logs) >= 30 and not plan.n_of_1_enrolled and plan.phase == "maintenance":
+            out.append(Proposal(self.name, "n_of_1_enrolment",
+                                f"Patient {pid}: {len(logs)} records on a stable regimen. Offer a randomised, "
+                                f"blinded N-of-1 trial to test the benefit within this patient.",
+                                {"patient_id": pid, "schedule": n_of_1_schedule(4)},
+                                {"accuracy": 1.0, "safety": 0.2}, ["Ch 5.4 (ref 98)", "Ch 13.3"],
+                                uncertainty="Requires a stable condition and a rapidly reversible treatment."))
         return out
 
     def _log_quality(self, pid: str, logs: list[dict]) -> list[Proposal]:
@@ -357,7 +390,7 @@ class TitrationMonitorAgent(Agent):
                                     {"safety": 0.6, "accuracy": 1.0}, ["Ch 13.2"],
                                     target=f"patient:{pid}:multivar:{cur['timestamp']}"))
         for l in logs[-10:]:
-            sev = [a for a in l.get("adverse_effects", []) if a.get("severity") in SEVERE]
+            sev = [a for a in l.get("adverse_effects", []) if _is_severe(a)]
             if sev:
                 out.append(Proposal(self.name, "safety_alert",
                                     f"Patient {pid}: adverse effect(s) {[a['name'] for a in sev]} at {l['timestamp']}. "
@@ -370,7 +403,7 @@ class TitrationMonitorAgent(Agent):
 
     def _step_logic(self, pid: str, plan: TitrationPlan, logs: list[dict], est, now: datetime) -> list[Proposal]:
         out = []
-        recent_ae = any(a.get("severity") in SEVERE for l in logs[-5:] for a in l.get("adverse_effects", []))
+        recent_ae = any(_is_severe(a) for l in logs[-5:] for a in l.get("adverse_effects", []))
         unc = (f"Pooled improvement {est.mean:.1f} (90% {est.lo90:.1f} to {est.hi90:.1f}) points; {est.note}")
         if now - plan.start >= timedelta(days=plan.review_after_days) and plan.phase != "review":
             meets = est.lo90 >= plan.benefit_threshold
