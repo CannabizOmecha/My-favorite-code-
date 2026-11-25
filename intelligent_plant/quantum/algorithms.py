@@ -169,7 +169,11 @@ def grover_search(n: int, marked: set[int], shots: int = 1, seed: int = 0) -> Gr
     N, M = 2 ** n, len(marked)
     if not 0 < M < N:
         raise ValueError("need 0 < |marked| < 2**n")
-    k = max(1, int(math.floor(math.pi / 4 * math.sqrt(N / M))))
+    if any(not 0 <= int(i) < N for i in marked):
+        raise ValueError("marked indices must lie in [0, 2**n)")
+    # Optimal iteration count round(pi/(4 theta) - 1/2), sin(theta) = sqrt(M/N). When most states
+    # are marked this is 0: amplifying would rotate PAST the solutions and do worse than guessing.
+    k = max(0, round(math.pi / (4 * math.asin(math.sqrt(M / N))) - 0.5))
     sv = Statevector(n)
     for q in range(n):
         sv.h(q)

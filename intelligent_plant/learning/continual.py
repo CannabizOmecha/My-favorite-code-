@@ -140,6 +140,8 @@ class ChampionChallengerLoop:
     suspended: bool = False            # degraded champion abstains rather than serve bad predictions
     min_coverage: float = 0.75
     pending: RecursiveBayesianRegressor | None = None
+    pending_validation: Evaluation | None = None
+    pending_reference: list = field(default_factory=list)
     history: list = field(default_factory=list)
     cycle_no: int = 0
 
@@ -149,6 +151,10 @@ class ChampionChallengerLoop:
             raise ValueError("Only measured ground-truth outcomes may train the model, never model outputs.")
         if len(x) != self.n_features:
             raise ValueError(f"expected {self.n_features} features")
+        if not (math.isfinite(float(y)) and all(math.isfinite(float(v)) for v in x)):
+            # A NaN in the holdout turns every comparison False: promotion AND degradation
+            # detection would silently stop. Reject at entry instead.
+            raise ValueError("non-finite outcome or feature; not a measured value")
         self.data_X.append(list(map(float, x)))
         self.data_y.append(float(y))
         self.data_source.append(source)
@@ -194,7 +200,8 @@ class ChampionChallengerLoop:
         not_worse = champ_eval is None or ch_eval.rmse <= champ_eval.rmse
         promote = gate.passed and (better or ((drifted or degraded) and not_worse))
         if promote and self.clinical:
-            self.pending = challenger
+            self.pending, self.pending_validation = challenger, ch_eval
+            self.pending_reference = [list(x) for x in Xtr]
             reason = "Challenger passes gate; clinical model promotion queued for its human owner."
             r = LoopReport(self.cycle_no, self.champion_version, ch_eval, champ_eval, False, True, reason, psi)
         elif promote:
@@ -222,7 +229,10 @@ class ChampionChallengerLoop:
         self.champion, self.pending = self.pending, None
         self.champion_version += 1
         self.suspended = False
-        self.champion_reference = [list(x) for x in self.data_X[-self.window:]]
+        # Record the baseline the model was validated on, so degradation of a clinical model is
+        # detected (and it abstains) exactly as for non-clinical models.
+        self.champion_validation, self.pending_validation = self.pending_validation, None
+        self.champion_reference, self.pending_reference = self.pending_reference, []
         return True
 
     def predict(self, x) -> tuple[float, float, float] | None:
