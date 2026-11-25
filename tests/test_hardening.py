@@ -101,3 +101,28 @@ def test_statevector_rejects_wrong_shape_or_unnormalised_amplitudes():
     sv = Statevector(1, np.array([1.0, 0.0], dtype=complex))
     assert sv.probabilities()[0] == pytest.approx(1.0)
 
+
+
+# ------------------------------------------------------------------ command line (was 0% covered)
+def test_cli_demo_shows_patient_view_and_intact_chain(capsys, monkeypatch):
+    from intelligent_plant import __main__ as cli
+    monkeypatch.setattr("sys.argv", ["intelligent_plant", "demo", "--llm", "off"])
+    cli.main()
+    out = capsys.readouterr().out
+    assert "WHAT THE PATIENT SEES" in out and "chain intact: True" in out
+    assert "P-" not in out.split("WHAT THE PATIENT SEES")[1].split("patient message stats")[0]   # no pseudonyms
+
+
+def test_cli_quantum_benchmarks_run(capsys, monkeypatch):
+    from intelligent_plant import __main__ as cli
+    monkeypatch.setattr("sys.argv", ["intelligent_plant", "quantum"])
+    cli.main()
+    out = capsys.readouterr().out
+    assert "Bell pair" in out and "Grover" in out and "QAOA" in out
+
+
+def test_cli_rejects_unknown_command(monkeypatch):
+    from intelligent_plant import __main__ as cli
+    monkeypatch.setattr("sys.argv", ["intelligent_plant", "launch-missiles"])
+    with pytest.raises(SystemExit):
+        cli.main()
