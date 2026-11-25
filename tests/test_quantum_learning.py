@@ -7,8 +7,12 @@ import math
 import numpy as np
 import pytest
 
-from intelligent_plant.learning.continual import ChampionChallengerLoop, RecursiveBayesianRegressor, evaluate, \
-    t_quantile_95
+from intelligent_plant.learning.continual import (
+    ChampionChallengerLoop,
+    RecursiveBayesianRegressor,
+    evaluate,
+    t_quantile_95,
+)
 from intelligent_plant.quantum import algorithms as qa
 from intelligent_plant.quantum.advantage import decide, portfolio_qubo
 from intelligent_plant.quantum.statevector import MAX_QUBITS, Statevector, bell_pair, pauli_matrix

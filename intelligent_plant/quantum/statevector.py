@@ -43,27 +43,34 @@ def rz(t: float) -> np.ndarray:
 @dataclass
 class Statevector:
     n: int
-    amps: np.ndarray = field(default=None)  # type: ignore[assignment]
+    amps: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=complex))   # empty -> |0...0>
 
     def __post_init__(self) -> None:
         if not 1 <= self.n <= MAX_QUBITS:
             raise ValueError(f"{self.n} qubits outside simulable range 1..{MAX_QUBITS} (state size 2**n)")
-        if self.amps is None:
+        if self.amps is None or self.amps.size == 0:
             self.amps = np.zeros(2 ** self.n, dtype=complex)
             self.amps[0] = 1.0
+        else:
+            self.amps = np.asarray(self.amps, dtype=complex)
+            if self.amps.shape != (2 ** self.n,):
+                raise ValueError(f"amplitude vector must have shape ({2 ** self.n},), got {self.amps.shape}")
+            norm = float(np.linalg.norm(self.amps))
+            if not np.isfinite(norm) or abs(norm - 1.0) > 1e-8:
+                raise ValueError(f"state must be normalised (norm {norm})")
 
     # ---------------------------------------------------------------- gates
     def _tensor(self) -> np.ndarray:
         # axis k of the tensor is qubit (n-1-k), so qubit q lives on axis n-1-q
         return self.amps.reshape([2] * self.n)
 
-    def apply(self, U: np.ndarray, q: int) -> "Statevector":
+    def apply(self, U: np.ndarray, q: int) -> Statevector:
         t = np.moveaxis(self._tensor(), self.n - 1 - q, 0)
         t = np.tensordot(U, t, axes=([1], [0]))
         self.amps = np.moveaxis(t, 0, self.n - 1 - q).reshape(-1)
         return self
 
-    def apply2(self, U4: np.ndarray, q_ctrl: int, q_tgt: int) -> "Statevector":
+    def apply2(self, U4: np.ndarray, q_ctrl: int, q_tgt: int) -> Statevector:
         """Two-qubit unitary in basis |q_ctrl q_tgt> (q_ctrl is the high bit)."""
         a, b = self.n - 1 - q_ctrl, self.n - 1 - q_tgt
         t = np.moveaxis(self._tensor(), (a, b), (0, 1))
@@ -72,37 +79,37 @@ class Statevector:
         self.amps = np.moveaxis(t, (0, 1), (a, b)).reshape(-1)
         return self
 
-    def h(self, q: int) -> "Statevector":
+    def h(self, q: int) -> Statevector:
         return self.apply(H, q)
 
-    def x(self, q: int) -> "Statevector":
+    def x(self, q: int) -> Statevector:
         return self.apply(X, q)
 
-    def z(self, q: int) -> "Statevector":
+    def z(self, q: int) -> Statevector:
         return self.apply(Z, q)
 
-    def rx(self, q: int, t: float) -> "Statevector":
+    def rx(self, q: int, t: float) -> Statevector:
         return self.apply(rx(t), q)
 
-    def ry(self, q: int, t: float) -> "Statevector":
+    def ry(self, q: int, t: float) -> Statevector:
         return self.apply(ry(t), q)
 
-    def rz(self, q: int, t: float) -> "Statevector":
+    def rz(self, q: int, t: float) -> Statevector:
         return self.apply(rz(t), q)
 
-    def cnot(self, c: int, t: int) -> "Statevector":
+    def cnot(self, c: int, t: int) -> Statevector:
         U = np.eye(4, dtype=complex)
         U[[2, 3]] = U[[3, 2]]
         return self.apply2(U, c, t)
 
-    def cz(self, a: int, b: int) -> "Statevector":
+    def cz(self, a: int, b: int) -> Statevector:
         return self.apply2(np.diag([1, 1, 1, -1]).astype(complex), a, b)
 
-    def rzz(self, a: int, b: int, t: float) -> "Statevector":
+    def rzz(self, a: int, b: int, t: float) -> Statevector:
         """exp(-i t/2 Z_a Z_b): the entangling cost layer of QAOA."""
         return self.apply2(np.diag(np.exp(-1j * t / 2 * np.array([1, -1, -1, 1]))), a, b)
 
-    def phase_diagonal(self, phases: np.ndarray) -> "Statevector":
+    def phase_diagonal(self, phases: np.ndarray) -> Statevector:
         """Multiply each basis state by exp(-i * phases[k]) (diagonal cost unitary)."""
         self.amps = self.amps * np.exp(-1j * phases)
         return self
@@ -117,7 +124,7 @@ class Statevector:
         rng = rng or np.random.default_rng()
         idx = rng.choice(len(self.amps), size=shots, p=self.probabilities())
         vals, counts = np.unique(idx, return_counts=True)
-        return dict(zip(vals.tolist(), counts.tolist()))
+        return dict(zip(vals.tolist(), counts.tolist(), strict=True))
 
     def expectation_pauli(self, pauli: str) -> float:
         """<psi| P |psi> for a Pauli string; pauli[0] acts on qubit 0."""

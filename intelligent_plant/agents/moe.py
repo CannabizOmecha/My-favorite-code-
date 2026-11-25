@@ -74,12 +74,12 @@ class MixtureOfExperts:
 
     async def consult(self, query: dict, ctx: Context) -> MoEResult:
         w = self.gate(query)
-        chosen = sorted(w, key=w.get, reverse=True)[: self.top_k]
+        chosen = sorted(w, key=lambda name: w[name], reverse=True)[: self.top_k]
         chosen = list(dict.fromkeys(list(self.always_consult) + chosen))
         results = await asyncio.gather(*(self.experts[n].opine(query, ctx) for n in chosen),
                                        return_exceptions=True)
         opinions, abstained, flags = [], [], []
-        for n, r in zip(chosen, results):
+        for n, r in zip(chosen, results, strict=True):
             if isinstance(r, BaseException):
                 abstained.append(n)
                 flags.append(f"Expert {n} failed ({type(r).__name__}); its domain is unassessed.")
@@ -89,20 +89,21 @@ class MixtureOfExperts:
                 opinions.append(r)
                 flags.extend(r.flags)
         answers: dict[str, tuple[str, float]] = {}
-        by_q: dict[str, list[ExpertOpinion]] = {}
+        by_q: dict[str, list[tuple[str, ExpertOpinion]]] = {}
         for o in opinions:
-            if o.recommendation:
-                by_q.setdefault(o.question, []).append(o)
+            # A blocking opinion counts even without a categorical answer (fail closed).
+            if o.recommendation or o.blocking:
+                by_q.setdefault(o.question, []).append((o.recommendation or "blocked", o))
         for q, ops in by_q.items():
-            blocking = [o for o in ops if o.blocking]
+            blocking = [rec for rec, o in ops if o.blocking]
             if blocking:
                 # Every blocking verdict is reported, in a deterministic order.
-                answers[q] = ("+".join(sorted({o.recommendation for o in blocking})), 1.0)
+                answers[q] = ("+".join(sorted(set(blocking))), 1.0)
                 continue
             votes: dict[str, float] = {}
-            for o in ops:
-                votes[o.recommendation] = votes.get(o.recommendation, 0.0) + w.get(o.expert, 0.0) * o.confidence
-            rec = max(votes, key=votes.get)
+            for rec_name, o in ops:
+                votes[rec_name] = votes.get(rec_name, 0.0) + w.get(o.expert, 0.0) * o.confidence
+            rec = max(votes, key=lambda r: votes[r])
             total = sum(votes.values())
             answers[q] = (rec, votes[rec] / total if total > 0 else 0.0)
         return MoEResult(answers, list(dict.fromkeys(flags)), opinions, chosen, abstained, w)

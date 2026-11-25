@@ -8,8 +8,13 @@ import pytest
 from intelligent_plant.agents.clinical import ConsultationAgent
 from intelligent_plant.knowledge.interactions import PatientRiskProfile
 from intelligent_plant.orchestrator import IntelligentEnterprise
-from intelligent_plant.patient.communication import (TEMPLATES, URGENT_HELP, PatientMessenger, progress_summary,
-                                                     reading_grade)
+from intelligent_plant.patient.communication import (
+    TEMPLATES,
+    URGENT_HELP,
+    PatientMessenger,
+    progress_summary,
+    reading_grade,
+)
 from intelligent_plant.simulation import NOW, build_world
 
 JARGON = re.compile(r"P-[0-9a-f]{8,}|DDI|CYP|COA|mg/kg|titration|pharmacokinetic|\bAE\b", re.I)
@@ -85,8 +90,8 @@ def test_end_to_end_patient_gets_plain_messages_and_progress():
     assert any("do not take any more today" in t for t in texts)
     assert any(t.startswith("Here is how you are doing") for t in texts)
     assert all(not JARGON.search(t) for t in texts)
-    consult = [d for d in ent.store.all("decision") if d["action"] == "consultation_report"
-               and "chronic_pain_adult" in d["summary"]][0]
+    consult = next(d for d in ent.store.all("decision") if d["action"] == "consultation_report"
+                   and "chronic_pain_adult" in d["summary"])
     assert consult["payload"]["sequence"]["0_patient_priorities"]["goals"] == ["sleep", "walking the dog again"]
     # Weekly cadence: no second summary the next day.
     asyncio.run(ent.run_cycle({}, now=NOW + timedelta(days=1)))
@@ -137,7 +142,7 @@ def test_held_message_is_delivered_in_the_morning_and_urgent_never_held():
 def test_naive_datetime_does_not_crash_routine_send():
     m = PatientMessenger()
     m.send("P1", "missing_log_fields", {"missing": ["dose_units"]}, datetime(2026, 11, 19, 12, tzinfo=timezone.utc))
-    m.send("P1", "missing_log_fields", {"missing": ["dose_units"]}, datetime(2026, 11, 19, 13))
+    m.send("P1", "missing_log_fields", {"missing": ["dose_units"]}, datetime(2026, 11, 19, 13))  # noqa: DTZ001 - naive on purpose
 
 
 def test_repeated_cycles_do_not_re_page_the_patient():

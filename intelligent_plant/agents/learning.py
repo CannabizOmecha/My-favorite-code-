@@ -71,7 +71,7 @@ class QuantumPortfolioAgent(Agent):
         value = np.array([2 * s["consistency"] + s["contamination_resistance"] + s["terpene_stability"]
                           + 0.5 * s["efficiency"] for s in scores])
         d = decide(portfolio_qubo(value, K, k, diversity_weight=b.get("diversity_weight", 4.0)))
-        chosen = [c.name for c, x in zip(cands, d.chosen.best_bits) if x]
+        chosen = [c.name for c, x in zip(cands, d.chosen.best_bits, strict=True) if x]
         q = d.quantum
         return [Proposal(self.name, "breeding_selection",
                          f"Advance {chosen} (k={k}, diversity-aware). Solver: {d.chosen.method}. {d.rationale}",

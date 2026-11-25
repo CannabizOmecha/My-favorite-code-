@@ -6,10 +6,9 @@ conclusion. Every interpretation that would drive an operational decision is
 routed to counsel through the approval queue."""
 from __future__ import annotations
 
-import math
-
 import difflib
 import json
+import math
 from dataclasses import dataclass
 from datetime import date
 from importlib import resources

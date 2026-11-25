@@ -28,7 +28,7 @@ class InventoryReconciliationAgent(Agent):
                         f"Reconciled {len(inv)} items; total discrepancy {sum(disc):+.1f} g.",
                         {"items": len(inv), "net_discrepancy_g": round(sum(disc), 1)}, {"accuracy": 1.0},
                         ["Ch 12.1"])]
-        for item, d, s in zip(inv, disc, z):
+        for item, d, s in zip(inv, disc, z, strict=True):
             if abs(s) > 3.5:
                 out.append(Proposal(self.name, "anomaly_investigation",
                                     f"{item['item_id']}: discrepancy {d:+.1f} g (robust z={s:.1f}). Investigate: unit "

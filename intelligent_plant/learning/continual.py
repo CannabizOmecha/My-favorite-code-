@@ -63,13 +63,13 @@ class RecursiveBayesianRegressor:
         phi = self._phi(x)
         L_new = self.L + np.outer(phi, phi)
         mu_new = np.linalg.solve(L_new, self.L @ self.mu + phi * y)
-        self.b += 0.5 * (y * y + self.mu @ self.L @ self.mu - mu_new @ L_new @ mu_new)
+        self.b += 0.5 * float(y * y + self.mu @ self.L @ self.mu - mu_new @ L_new @ mu_new)
         self.a += 0.5
         self.L, self.mu = L_new, mu_new
         self._n += 1
 
-    def fit(self, X, y) -> "RecursiveBayesianRegressor":
-        for xi, yi in zip(X, y):
+    def fit(self, X, y) -> RecursiveBayesianRegressor:
+        for xi, yi in zip(X, y, strict=True):
             self.update(xi, yi)
         return self
 
@@ -99,7 +99,7 @@ class Evaluation:
 
 def evaluate(model: RecursiveBayesianRegressor, X, y) -> Evaluation:
     preds = [model.predict(x) for x in X]
-    rmse = math.sqrt(float(np.mean([(p[0] - t) ** 2 for p, t in zip(preds, y)]))) if len(y) else float("nan")
+    rmse = math.sqrt(float(np.mean([(p[0] - t) ** 2 for p, t in zip(preds, y, strict=True)]))) if len(y) else float("nan")
     cov = interval_coverage([(p[1], p[2]) for p in preds], list(y))
     return Evaluation(rmse, cov, len(y))
 
@@ -181,8 +181,8 @@ class ChampionChallengerLoop:
         # Two challengers: the full window, and recent data only (adapts after a regime change).
         cands = [(Xtr, ytr)] + [(Xtr[-m:], ytr[-m:]) for m in (2 * n_hold, n_hold, 50)
                                 if 50 <= m < len(ytr)]
-        scored = [(self._train(a, b), a) for a, b in cands]
-        scored = [(m, a, evaluate(m, Xte, yte)) for m, a in scored]
+        trained = [(self._train(a, b), a) for a, b in cands]
+        scored = [(m, a, evaluate(m, Xte, yte)) for m, a in trained]
         challenger, Xtr, ch_eval = min(scored, key=lambda t: (abs(t[2].coverage90 - 0.9) > 0.05, t[2].rmse))
         psi = None
         if self.champion and len(self.champion_reference) >= 50 and len(Xte) >= 50:

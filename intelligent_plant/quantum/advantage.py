@@ -57,7 +57,7 @@ def decide(Q: np.ndarray, backend: QuantumBackend | None = None) -> GateDecision
         xb = np.asarray(quantum.best_bits, float)
         quantum.best_energy = float(xb @ Q @ xb) if xb.shape == (n,) else float("inf")
     if quantum is not None and quantum.best_energy <= classical.best_energy + 1e-9:
-        use_q = backend.name != "statevector_simulator"   # on a simulator, a tie is not an advantage
+        use_q = getattr(backend, "name", "") != "statevector_simulator"   # on a simulator a tie is no advantage
         verb = "beat" if quantum.best_energy < classical.best_energy - 1e-9 else "matched"
         why = (f"Quantum {verb} the classical " + ("optimum" if n <= EXACT_LIMIT else "annealing result (not a proven optimum)")
                + ("" if use_q else
@@ -68,7 +68,7 @@ def decide(Q: np.ndarray, backend: QuantumBackend | None = None) -> GateDecision
                f"classical used.")
     else:
         use_q, why = False, f"{n} variables exceeds simulation limit; classical only."
-    chosen = quantum if use_q else classical
+    chosen = quantum if (use_q and quantum is not None) else classical
     return GateDecision(chosen, classical, quantum, use_q, why,
                         {"n": n, "backend": getattr(backend, "name", None),
                          "quantum_success_probability": quantum.success_probability if quantum else None,

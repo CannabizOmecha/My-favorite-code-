@@ -2,13 +2,15 @@
 import numpy as np
 import pytest
 
-from intelligent_plant.science import breeding, chemistry as ch, economics, environment as env, pharmacology as pk
-from intelligent_plant.science import quality, stats
 from intelligent_plant import simulation
+from intelligent_plant.science import breeding, economics, quality, stats
+from intelligent_plant.science import chemistry as ch
+from intelligent_plant.science import environment as env
+from intelligent_plant.science import pharmacology as pk
 
 
 def test_total_thc_factor_is_mw_ratio():
-    assert ch.ACID_TO_NEUTRAL == pytest.approx(0.8772, abs=1e-4)
+    assert pytest.approx(0.8772, abs=1e-4) == ch.ACID_TO_NEUTRAL
     assert ch.total_thc(1.0, 20.0) == pytest.approx(1.0 + 0.877 * 20.0, rel=1e-3)
 
 
@@ -20,7 +22,7 @@ def test_decarb_half_life_and_t99_at_110C():
 
 def test_arrhenius_fit_matches_book():
     assert ch.THCA_FIT.Ea_kJ == pytest.approx(87.1, abs=0.1)
-    assert ch.THCA_FIT.A == pytest.approx(1.40e9, rel=0.01)
+    assert pytest.approx(1.40e9, rel=0.01) == ch.THCA_FIT.A
     assert ch.time_to_conversion_s(ch.THCA_FIT.k(130), 0.99) / 60 == pytest.approx(10.5, abs=0.1)
     assert ch.time_to_conversion_s(ch.THCA_FIT.k(145), 0.99) / 60 == pytest.approx(4.1, abs=0.1)
 

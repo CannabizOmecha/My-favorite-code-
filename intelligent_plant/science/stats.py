@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 import random
+import secrets
 import statistics
 from dataclasses import dataclass
 
@@ -59,13 +60,17 @@ def population_hyperparameters(groups: list[list[float]]) -> tuple[float, float,
 
 def interval_coverage(intervals: list[tuple[float, float]], outcomes: list[float]) -> float:
     """Prospective calibration: of 90% intervals, ~90% should contain the outcome."""
-    hits = sum(lo <= y <= hi for (lo, hi), y in zip(intervals, outcomes))
+    hits = sum(lo <= y <= hi for (lo, hi), y in zip(intervals, outcomes, strict=True))
     return hits / len(outcomes) if outcomes else float("nan")
 
 
 def n_of_1_schedule(pairs: int, seed: int | None = None) -> list[str]:
-    """Randomised, balanced A/B pairs for a within-patient crossover (ref 98)."""
-    rng = random.Random(seed)
+    """Randomised, balanced A/B pairs for a within-patient crossover (ref 98).
+
+    Blinding depends on allocation concealment: without a seed the order comes from the
+    operating system's cryptographic RNG, so it cannot be predicted or reproduced by anyone
+    who sees the code or the logs. A seed is for tests and simulation only."""
+    rng: random.Random = random.Random(seed) if seed is not None else secrets.SystemRandom()
     sched: list[str] = []
     for _ in range(pairs):
         pair = ["A", "B"]

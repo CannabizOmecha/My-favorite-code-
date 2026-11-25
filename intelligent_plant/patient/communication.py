@@ -133,11 +133,10 @@ class PatientMessenger:
         if not text.strip():
             msg.held_reason = "nothing to say"
             return msg
-        if urgency == "urgent" and event_id is not None:
-            if (patient_id, event, event_id) in self._delivered_events:
-                msg.held_reason = "already delivered for this event"
-                self.suppressed.append(msg)
-                return msg
+        if urgency == "urgent" and event_id is not None and (patient_id, event, event_id) in self._delivered_events:
+            msg.held_reason = "already delivered for this event"
+            self.suppressed.append(msg)
+            return msg
         if urgency != "urgent":
             msg.held_reason = self._routine_block(patient_id, event, now)
         if msg.held_reason:
@@ -177,7 +176,11 @@ class PatientMessenger:
         released, still = [], []
         for msg in self.held:
             event = self._held_meta.get(id(msg))
-            block = self._routine_block(msg.patient_id, event, now) if event else "unknown event"
+            if event is None:
+                msg.held_reason = "unknown event"
+                still.append(msg)
+                continue
+            block = self._routine_block(msg.patient_id, event, now)
             if block is None:
                 self._held_meta.pop(id(msg), None)
                 self._deliver(msg, event, now)
@@ -193,7 +196,7 @@ class PatientMessenger:
         return released
 
     def stats(self) -> dict:
-        per_patient = defaultdict(int)
+        per_patient: defaultdict[str, int] = defaultdict(int)
         for m in self.sent:
             per_patient[m.patient_id] += 1
         return {"delivered": len(self.sent), "held": len(self.held),

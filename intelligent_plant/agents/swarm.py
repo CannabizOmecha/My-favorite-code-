@@ -26,10 +26,15 @@ from .llm import GROUNDING
 log = logging.getLogger(__name__)
 
 
+# Every disposition the swarm can produce. Anything that renders or counts outcomes must cover all of them.
+OUTCOMES = ("executed", "executed_with_alarm", "executed_notify", "queued", "info", "vetoed", "refused",
+            "superseded", "actuation_failed")
+
+
 @dataclass
 class Disposition:
     proposal: Proposal
-    outcome: str          # executed | executed_with_alarm | executed_notify | queued | info | vetoed | refused | superseded | actuation_failed
+    outcome: str          # one of OUTCOMES
     objections: list[Objection] = field(default_factory=list)
     detail: str = ""
 
@@ -62,7 +67,7 @@ class Swarm:
         results = await asyncio.gather(*(self._run_agent(a, ctx) for a in self.agents), return_exceptions=True)
         proposals: list[Proposal] = []
         failures: dict[str, str] = {}
-        for a, r in zip(self.agents, results):
+        for a, r in zip(self.agents, results, strict=True):
             if isinstance(r, BaseException):
                 # Fail safe: a failed agent produces no action, and a human hears about it.
                 failures[a.name] = f"{type(r).__name__}: {r}"
@@ -73,13 +78,13 @@ class Swarm:
         crit_jobs = [(p, c) for p in proposals for c in self.critics if c.applies_to(p)]
         crit_results = await asyncio.gather(*(c.critique(p, ctx) for p, c in crit_jobs), return_exceptions=True)
         objections: dict[str, list[Objection]] = defaultdict(list)
-        for (p, c), r in zip(crit_jobs, crit_results):
-            if isinstance(r, BaseException):
+        for (p, c), cr in zip(crit_jobs, crit_results, strict=True):
+            if isinstance(cr, BaseException):
                 # A deterministic safety critic that cannot run has not cleared the proposal: fail closed.
                 sev = "veto" if isinstance(c, SafetyCritic) else "warn"
-                objections[p.id].append(Objection(c.name, p.id, sev, f"critic failed: {r}"))
+                objections[p.id].append(Objection(c.name, p.id, sev, f"critic failed: {cr}"))
             else:
-                objections[p.id].extend(r)
+                objections[p.id].extend(cr)
 
         dispositions: list[Disposition] = []
         live: list[Proposal] = []
@@ -96,7 +101,7 @@ class Swarm:
         for p in live:
             groups[p.target or p.id].append(p)
         winners: list[Proposal] = []
-        for tgt, ps in groups.items():
+        for ps in groups.values():
             if len(ps) == 1:
                 winners.append(ps[0])
                 continue
@@ -106,7 +111,7 @@ class Swarm:
                     winners.append(p)
                 else:
                     dispositions.append(Disposition(p, "superseded", objections[p.id],
-                                                    f"Lexicographic ordering preferred {best.id if best else 'none'}"))
+                                                    f"Lexicographic ordering preferred {getattr(best, 'id', 'none')}"))
 
         for p in winners:
             dispositions.append(self._gate(p, objections[p.id], ctx))
@@ -151,7 +156,7 @@ class Swarm:
         if act:
             try:
                 act(p, ctx)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - any actuator failure must alarm a human, never abort audit
                 msg = f"Actuator for {p.task} failed ({type(e).__name__}: {e}); not done, human action required."
                 ctx.alert("alarm", "governance", f"{msg} {p.summary}")
                 return msg

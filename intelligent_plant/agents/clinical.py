@@ -22,17 +22,18 @@ ctx.observations["product_catalog"] = [{product_id, form, route, unit_mg_thc,
 """
 from __future__ import annotations
 
+import itertools
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from ..knowledge.evidence import HARMS, SPECIALIST_ONLY, Grade, evidence_for
 from ..knowledge.interactions import check_interactions, screen_contraindications
+from ..patient.communication import progress_summary
 from ..science.pharmacology import ROUTES, oral_redose_safe, relative_thc_exposure
 from ..science.quality import audit_coa
-from ..science.stats import n_of_1_schedule, partial_pool, population_hyperparameters
+from ..science.stats import partial_pool, population_hyperparameters
 from .base import Agent, Context, Proposal
-from ..patient.communication import progress_summary
 from .moe import Expert, ExpertOpinion, MixtureOfExperts
 
 SCOPE = ("Adults (>=18) with an indication in the curated evidence map, under a treating clinician. "
@@ -233,7 +234,7 @@ class ConsultationAgent(Agent):
         for pid, pt in ctx.observations.get("patients", {}).items():
             try:
                 out += await self._consult_one(pid, pt, ctx)
-            except Exception as e:   # one bad record must not silence other patients (fail safe, loudly)
+            except Exception as e:  # noqa: BLE001 - one bad record must not silence other patients; alerted
                 out.append(_patient_error(self.name, pid, e))
         return out
 
@@ -316,7 +317,7 @@ class TitrationMonitorAgent(Agent):
         for pid, pt in patients.items():
             try:
                 out += self._monitor_one(pid, pt, ctx, mu, tau, sigma)
-            except Exception as e:   # one bad record must not silence other patients (fail safe, loudly)
+            except Exception as e:  # noqa: BLE001 - one bad record must not silence other patients; alerted
                 out.append(_patient_error(self.name, pid, e))
         return out
 
@@ -352,9 +353,13 @@ class TitrationMonitorAgent(Agent):
             out.append(Proposal(self.name, "n_of_1_enrolment",
                                 f"Patient {pid}: {len(logs)} records on a stable regimen. Offer a randomised, "
                                 f"blinded N-of-1 trial to test the benefit within this patient.",
-                                {"patient_id": pid, "schedule": n_of_1_schedule(4)},
+                                # No schedule here: this payload is shown to the treating clinician and
+                                # written to the audit log, so it would unblind the trial. The order is
+                                # generated after approval and held for the unblinded pharmacist only.
+                                {"patient_id": pid, "pairs": 4, "allocation": "concealed"},
                                 {"accuracy": 1.0, "safety": 0.2}, ["Ch 5.4 (ref 98)", "Ch 13.3"],
-                                uncertainty="Requires a stable condition and a rapidly reversible treatment."))
+                                uncertainty="Requires a stable condition and a rapidly reversible treatment.",
+                                target=f"patient:{pid}:n_of_1"))
         return out
 
     def _log_quality(self, pid: str, logs: list[dict]) -> list[Proposal]:
@@ -369,7 +374,7 @@ class TitrationMonitorAgent(Agent):
 
     def _rule_checks(self, pid: str, logs: list[dict]) -> list[Proposal]:
         out = []
-        for prev, cur in zip(logs, logs[1:]):
+        for prev, cur in itertools.pairwise(logs):
             t0, t1 = datetime.fromisoformat(prev["timestamp"]), datetime.fromisoformat(cur["timestamp"])
             if prev.get("route") == "oral" and cur.get("route") == "oral" and \
                     not oral_redose_safe((t1 - t0).total_seconds() / 60, self.oral_wait_min):

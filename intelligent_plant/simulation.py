@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 from datetime import date, datetime, timedelta, timezone
+from typing import Any
 
 import numpy as np
 
@@ -80,10 +81,12 @@ def seed_registry_records(ent, n_patients: int = 12, seed: int = 7) -> None:
 def patient_logs(n: int, start: datetime, *, oral_redose_at: int | None = None,
                  ae_at: int | None = None, seed: int = 3) -> list[dict]:
     rng = random.Random(seed)
-    logs, t = [], start
+    logs: list[dict[str, Any]] = []
+    t = start
     for i in range(n):
         t = t + timedelta(hours=24)
-        ts = t if oral_redose_at != i else logs[-1]["_t"] + timedelta(minutes=45)
+        prev_t: datetime = logs[-1]["_t"] if logs else t
+        ts = t if oral_redose_at != i else prev_t + timedelta(minutes=45)
         pre = rng.uniform(5.5, 7.5)
         logs.append({"_t": ts, "timestamp": ts.isoformat(), "product_id": "PR-OIL-20", "batch_lot": "L-101",
                      "total_thc_unit": 0.5, "total_cbd_unit": 10.0, "dose_units": 1, "dose_mg_thc": 0.5,
@@ -166,8 +169,8 @@ def build_world(ent) -> dict:
          "coa": make_coa("C-303", "B-303", 1.0, 26.0, 0.1, 0.1), "batch_cv": 0.08, "available_months": 3},
     ]
     breeding = {
-        "traits": {"chemotype_ratio": dict(zip(("X", "y"), oligogenic_trait())),
-                   "yield": dict(zip(("X", "y"), polygenic_trait()))},
+        "traits": {"chemotype_ratio": dict(zip(("X", "y"), oligogenic_trait(), strict=True)),
+                   "yield": dict(zip(("X", "y"), polygenic_trait(), strict=True))},
         "candidates": CANDIDATES,
         "target_ratio": 20.0, "kinship_mean": 0.015, "advance_k": 3,
         "kinship": KINSHIP,

@@ -14,9 +14,10 @@ import hashlib
 import json
 import sqlite3
 import threading
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterable
+from typing import Any
 
 Validator = Callable[[dict], list[str]]
 
@@ -146,6 +147,8 @@ class RecordStore:
                 (entity, eid, version, _canon(data), prov.source, prov.operator, prov.instrument,
                  None if prov.calibrated is None else int(prov.calibrated), ts, reason_code, prev_hash, h))
             self._db.commit()
+            if cur.lastrowid is None:   # pragma: no cover - sqlite always sets it after INSERT
+                raise RuntimeError("record store insert returned no row id")
             return cur.lastrowid
 
     def correct(self, entity: str, data: dict, prov: Provenance, reason_code: str) -> int:

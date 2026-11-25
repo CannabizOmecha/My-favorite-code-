@@ -110,7 +110,7 @@ class MPCController:
 
     def solve(self, T: float, rh: float, T_target: float, vpd_target: float,
               leaf_offset_c: float, price_per_kwh: list[float]) -> MPCResult:
-        actions = list(itertools.product(self.levels, repeat=3))
+        actions: list[tuple[float, float, float]] = [(a, b, c) for a, b, c in itertools.product(self.levels, repeat=3)]
         best: MPCResult | None = None
         # Search the first action exhaustively, then hold it (move-blocking) -
         # keeps the search at 27 evaluations while still pricing energy over H.
@@ -125,7 +125,7 @@ class MPCController:
                     feasible = False
                     break
                 v = vpd_leaf(x_T - leaf_offset_c, x_T, x_rh)
-                kwh = sum(a * p for a, p in zip(u, self.kw_per_unit))
+                kwh = sum(a * p for a, p in zip(u, self.kw_per_unit, strict=True))
                 price = price_per_kwh[min(k, len(price_per_kwh) - 1)]
                 cost += (self.q_temp * (x_T - T_target) ** 2 + self.q_vpd * (v - vpd_target) ** 2
                          + self.r_effort * sum(a * a for a in u) + self.energy_weight * price * kwh)
@@ -133,6 +133,6 @@ class MPCController:
             if feasible and (best is None or cost < best.cost):
                 best = MPCResult(u, traj, cost)
         if best is None:  # fail safe: no humidity actuation; cool only if the room is on the warm side
-            cool = 1.0 if T >= (self.T_min + self.T_max) / 2 else 0.0
+            cool = 1.0 if (self.T_min + self.T_max) / 2 <= T else 0.0
             return MPCResult((cool, 0.0, 0.0), [], float("inf"))
         return best

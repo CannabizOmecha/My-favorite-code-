@@ -3,6 +3,7 @@ Appendix A.12), the ten-point COA audit (Chapter 3.4) and statistical
 process control on batch records (Chapter 11.3)."""
 from __future__ import annotations
 
+import itertools
 import math
 import statistics
 from dataclasses import dataclass, field
@@ -126,7 +127,7 @@ def shewhart(values: list[float], baseline_n: int | None = None) -> SPCResult:
     if len(base) < 2:
         raise ValueError("need at least 2 baseline points")
     mean = statistics.mean(base)
-    mr = [abs(b - a) for a, b in zip(base, base[1:])]
+    mr = [abs(b - a) for a, b in itertools.pairwise(base)]
     sigma = (statistics.mean(mr) / 1.128) if mr else 0.0
     ucl, lcl = mean + 3 * sigma, mean - 3 * sigma
     ooc = [i for i, v in enumerate(values) if v > ucl or v < lcl]
