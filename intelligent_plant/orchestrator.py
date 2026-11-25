@@ -3,6 +3,7 @@ patient outcome and back (Chapter 16, Figure 16.1)."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -197,10 +198,8 @@ class IntelligentEnterprise:
                 await self.run_cycle(await feed())
             except Exception:        # one bad cycle must not stop the facility; it is logged and alerted
                 log.exception("cycle failed; controllers remain on last known-good setpoints")
-            try:
+            with contextlib.suppress(asyncio.TimeoutError):   # timeout = time for the next cycle
                 await asyncio.wait_for(stop.wait(), timeout=interval_s)
-            except asyncio.TimeoutError:
-                pass
 
     # ------------------------------------------------------------ humans
     def decide(self, request_id: str, approve: bool, by: str, role: str, note: str = "",
