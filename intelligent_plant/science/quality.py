@@ -78,7 +78,8 @@ def audit_coa(coa: COA, market_total_thc: list[float] | None = None,
     f: list[tuple[str, str]] = []
     if not coa.lab_iso17025:
         f.append(("fail", "1. Laboratory not ISO/IEC 17025 accredited."))
-    if coa.method.upper() == "GC":
+    method = coa.method.upper()
+    if method.startswith("GC") and "DERIV" not in method:   # GC, GC-FID, GC-MS, ...
         f.append(("fail", "1. GC without derivatization decarboxylates acids variably; values not comparable."))
     if not coa.lot_matches_product:
         f.append(("fail", "2. Batch/lot number does not match product in hand."))

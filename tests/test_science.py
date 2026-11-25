@@ -167,3 +167,27 @@ def test_sustainability_metrics():
     m = economics.sustainability_metrics(100_000, 50_000, 40_000, 200_000, 50_000, 1, 0.5, 0.4, 0, 25, [500, 520, 480])
     assert m.energy_kwh_per_kg == 4000 and m.hvac_share_pct == 40 and m.water_l_per_kg == 6000
     assert env.grams_per_kwh(2.7, 0.9, 1.0) == pytest.approx(2.7 * 3.6 * 0.9)
+
+
+def test_n_of_1_two_pairs_not_falsely_conclusive():
+    from intelligent_plant.science.stats import analyse_n_of_1
+    r = analyse_n_of_1(["A", "B", "B", "A"], [5, 3, 4, 5])
+    assert r.lo90 < 0 < r.hi90 and not r.conclusive
+
+
+def test_mpc_fail_safe_does_not_cool_a_cold_room():
+    from intelligent_plant.science.environment import MPCController
+    res = MPCController().solve(T=15.0, rh=55, T_target=24, vpd_target=1.0, leaf_offset_c=1.0, price_per_kwh=[0.2])
+    assert res.action[0] == 0.0
+
+
+def test_280e_loss_never_yields_negative_tax():
+    assert economics.tax_under_280e(100, 200, 10).tax == 0.0
+    assert economics.tax_under_280e(100, 50, 80, subject_to_280e=False).tax == 0.0
+
+
+@pytest.mark.parametrize("method,flagged", [("GC", True), ("GC-FID", True), ("gc-ms", True),
+                                            ("GC-MS derivatized", False), ("HPLC", False)])
+def test_coa_audit_flags_every_underivatized_gc_variant(method, flagged):
+    r = quality.audit_coa(simulation.make_coa("C", "B", 0.5, 20, 0, 0, method=method))
+    assert any("GC without derivatization" in m for _, m in r.findings) == flagged

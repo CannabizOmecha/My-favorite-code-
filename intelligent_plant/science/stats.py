@@ -91,7 +91,9 @@ def analyse_n_of_1(schedule: list[str], outcomes: list[float]) -> NOf1Result:
         diffs.append(a - b)
     m = statistics.mean(diffs)
     se = statistics.stdev(diffs) / math.sqrt(len(diffs)) if len(diffs) > 1 else float("inf")
-    tcrit = {2: 2.92, 3: 2.35, 4: 2.13, 5: 2.02, 6: 1.94, 7: 1.89, 8: 1.86}.get(len(diffs) - 1, 1.8)
+    # one-sided 95% / two-sided 90% t critical values by degrees of freedom
+    tcrit = {1: 6.31, 2: 2.92, 3: 2.35, 4: 2.13, 5: 2.02, 6: 1.94, 7: 1.89, 8: 1.86,
+             9: 1.83, 10: 1.81}.get(len(diffs) - 1, 1.8)
     lo, hi = m - tcrit * se, m + tcrit * se
     return NOf1Result(m, lo, hi, len(diffs), conclusive=(lo > 0 or hi < 0))
 

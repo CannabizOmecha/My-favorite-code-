@@ -18,7 +18,7 @@ def tax_under_280e(revenue: float, cogs: float, opex: float, rate: float = 0.21,
                    subject_to_280e: bool = True) -> TaxResult:
     true_profit = revenue - cogs - opex
     base = (revenue - cogs) if subject_to_280e else true_profit
-    tax = rate * base
+    tax = rate * max(base, 0.0)   # a loss produces no tax, not a payout
     return TaxResult(true_profit, base, tax, tax / true_profit if true_profit else float("inf"))
 
 

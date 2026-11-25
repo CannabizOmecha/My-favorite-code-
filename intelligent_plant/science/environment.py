@@ -132,6 +132,7 @@ class MPCController:
                 traj.append((x_T, x_rh))
             if feasible and (best is None or cost < best.cost):
                 best = MPCResult(u, traj, cost)
-        if best is None:  # fail safe: full cooling, no humidity actuation
-            return MPCResult((1.0, 0.0, 0.0), [], float("inf"))
+        if best is None:  # fail safe: no humidity actuation; cool only if the room is on the warm side
+            cool = 1.0 if T >= (self.T_min + self.T_max) / 2 else 0.0
+            return MPCResult((cool, 0.0, 0.0), [], float("inf"))
         return best
