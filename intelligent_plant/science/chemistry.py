@@ -108,10 +108,11 @@ def plan_decarboxylation(target_conversion: float = 0.95,
                          temps_c: tuple[float, ...] = tuple(range(90, 151, 5)),
                          max_time_min: float = 240.0,
                          acid: str = "THCA",
-                         volatile: VolatileLossModel = VolatileLossModel()) -> list[DecarbPlan]:
+                         volatile: VolatileLossModel | None = None) -> list[DecarbPlan]:
     """Model-based controller (Chapter 3.3): for each temperature compute the
     time to reach the target conversion and the predicted volatile retention.
     Returns feasible plans sorted best-retention first."""
+    volatile = volatile or VolatileLossModel()
     rel = 1.0 if acid.upper() == "THCA" else CBDA_RELATIVE_RATE
     plans = []
     for T in temps_c:

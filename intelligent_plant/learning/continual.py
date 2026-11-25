@@ -63,13 +63,13 @@ class RecursiveBayesianRegressor:
         phi = self._phi(x)
         L_new = self.L + np.outer(phi, phi)
         mu_new = np.linalg.solve(L_new, self.L @ self.mu + phi * y)
-        self.b += 0.5 * (y * y + self.mu @ self.L @ self.mu - mu_new @ L_new @ mu_new)
+        self.b += 0.5 * float(y * y + self.mu @ self.L @ self.mu - mu_new @ L_new @ mu_new)
         self.a += 0.5
         self.L, self.mu = L_new, mu_new
         self._n += 1
 
-    def fit(self, X, y) -> "RecursiveBayesianRegressor":
-        for xi, yi in zip(X, y):
+    def fit(self, X, y) -> RecursiveBayesianRegressor:
+        for xi, yi in zip(X, y, strict=True):
             self.update(xi, yi)
         return self
 
@@ -99,7 +99,7 @@ class Evaluation:
 
 def evaluate(model: RecursiveBayesianRegressor, X, y) -> Evaluation:
     preds = [model.predict(x) for x in X]
-    rmse = math.sqrt(float(np.mean([(p[0] - t) ** 2 for p, t in zip(preds, y)]))) if len(y) else float("nan")
+    rmse = math.sqrt(float(np.mean([(p[0] - t) ** 2 for p, t in zip(preds, y, strict=True)]))) if len(y) else float("nan")
     cov = interval_coverage([(p[1], p[2]) for p in preds], list(y))
     return Evaluation(rmse, cov, len(y))
 
@@ -140,6 +140,8 @@ class ChampionChallengerLoop:
     suspended: bool = False            # degraded champion abstains rather than serve bad predictions
     min_coverage: float = 0.75
     pending: RecursiveBayesianRegressor | None = None
+    pending_validation: Evaluation | None = None
+    pending_reference: list = field(default_factory=list)
     history: list = field(default_factory=list)
     cycle_no: int = 0
 
@@ -149,6 +151,10 @@ class ChampionChallengerLoop:
             raise ValueError("Only measured ground-truth outcomes may train the model, never model outputs.")
         if len(x) != self.n_features:
             raise ValueError(f"expected {self.n_features} features")
+        if not (math.isfinite(float(y)) and all(math.isfinite(float(v)) for v in x)):
+            # A NaN in the holdout turns every comparison False: promotion AND degradation
+            # detection would silently stop. Reject at entry instead.
+            raise ValueError("non-finite outcome or feature; not a measured value")
         self.data_X.append(list(map(float, x)))
         self.data_y.append(float(y))
         self.data_source.append(source)
@@ -175,8 +181,8 @@ class ChampionChallengerLoop:
         # Two challengers: the full window, and recent data only (adapts after a regime change).
         cands = [(Xtr, ytr)] + [(Xtr[-m:], ytr[-m:]) for m in (2 * n_hold, n_hold, 50)
                                 if 50 <= m < len(ytr)]
-        scored = [(self._train(a, b), a) for a, b in cands]
-        scored = [(m, a, evaluate(m, Xte, yte)) for m, a in scored]
+        trained = [(self._train(a, b), a) for a, b in cands]
+        scored = [(m, a, evaluate(m, Xte, yte)) for m, a in trained]
         challenger, Xtr, ch_eval = min(scored, key=lambda t: (abs(t[2].coverage90 - 0.9) > 0.05, t[2].rmse))
         psi = None
         if self.champion and len(self.champion_reference) >= 50 and len(Xte) >= 50:
@@ -194,7 +200,8 @@ class ChampionChallengerLoop:
         not_worse = champ_eval is None or ch_eval.rmse <= champ_eval.rmse
         promote = gate.passed and (better or ((drifted or degraded) and not_worse))
         if promote and self.clinical:
-            self.pending = challenger
+            self.pending, self.pending_validation = challenger, ch_eval
+            self.pending_reference = [list(x) for x in Xtr]
             reason = "Challenger passes gate; clinical model promotion queued for its human owner."
             r = LoopReport(self.cycle_no, self.champion_version, ch_eval, champ_eval, False, True, reason, psi)
         elif promote:
@@ -222,7 +229,10 @@ class ChampionChallengerLoop:
         self.champion, self.pending = self.pending, None
         self.champion_version += 1
         self.suspended = False
-        self.champion_reference = [list(x) for x in self.data_X[-self.window:]]
+        # Record the baseline the model was validated on, so degradation of a clinical model is
+        # detected (and it abstains) exactly as for non-clinical models.
+        self.champion_validation, self.pending_validation = self.pending_validation, None
+        self.champion_reference, self.pending_reference = self.pending_reference, []
         return True
 
     def predict(self, x) -> tuple[float, float, float] | None:

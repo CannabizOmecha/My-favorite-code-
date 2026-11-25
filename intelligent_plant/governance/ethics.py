@@ -5,8 +5,9 @@ Maximise f1; among solutions within the pre-written tolerance of the best f1,
 maximise f2; and so on. Tolerances are declared up front, not tuned after."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Protocol, Sequence
+from typing import Protocol
 
 OBJECTIVES = ("safety", "ethics", "accuracy", "efficiency", "profitability")
 

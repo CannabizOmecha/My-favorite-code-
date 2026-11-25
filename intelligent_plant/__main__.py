@@ -12,7 +12,8 @@ from .orchestrator import IntelligentEnterprise
 from .simulation import NOW, build_world
 
 ICON = {"executed": "AUTO ", "executed_with_alarm": "ALARM", "executed_notify": "AUTO*", "queued": "QUEUE",
-        "info": "INFO ", "vetoed": "VETO ", "refused": "REFUS", "superseded": "SUPER"}
+        "info": "INFO ", "vetoed": "VETO ", "refused": "REFUS", "superseded": "SUPER",
+        "actuation_failed": "FAIL!"}
 
 
 def _w(s: str, indent: int = 10) -> str:
@@ -60,6 +61,7 @@ async def demo(use_llm: bool | None) -> None:
 
 def quantum_bench() -> None:
     import numpy as np
+
     from .quantum import algorithms as qa
     from .quantum.advantage import decide
     from .quantum.statevector import bell_pair
@@ -76,8 +78,11 @@ def quantum_bench() -> None:
     rng = np.random.default_rng(0)
     Q = rng.normal(size=(10, 10)); Q = (Q + Q.T) / 2
     d = decide(Q)
-    print(f"QAOA 10-var QUBO: P(optimum)={d.quantum.success_probability:.3f} (random: {1/1024:.4f}), "
-          f"approx ratio {d.quantum.approximation_ratio:.3f}; gate -> {d.chosen.method}. {d.rationale}")
+    if d.quantum is not None:
+        print(f"QAOA 10-var QUBO: P(optimum)={d.quantum.success_probability:.3f} (random: {1/1024:.4f}), "
+              f"approx ratio {d.quantum.approximation_ratio:.3f}; gate -> {d.chosen.method}. {d.rationale}")
+    else:
+        print(f"QAOA 10-var QUBO: no quantum backend; gate -> {d.chosen.method}. {d.rationale}")
 
 
 def main() -> None:

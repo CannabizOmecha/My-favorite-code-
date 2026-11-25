@@ -3,6 +3,7 @@ Appendix A.12), the ten-point COA audit (Chapter 3.4) and statistical
 process control on batch records (Chapter 11.3)."""
 from __future__ import annotations
 
+import itertools
 import math
 import statistics
 from dataclasses import dataclass, field
@@ -78,7 +79,8 @@ def audit_coa(coa: COA, market_total_thc: list[float] | None = None,
     f: list[tuple[str, str]] = []
     if not coa.lab_iso17025:
         f.append(("fail", "1. Laboratory not ISO/IEC 17025 accredited."))
-    if coa.method.upper() == "GC":
+    method = coa.method.upper()
+    if method.startswith("GC") and "DERIV" not in method:   # GC, GC-FID, GC-MS, ...
         f.append(("fail", "1. GC without derivatization decarboxylates acids variably; values not comparable."))
     if not coa.lot_matches_product:
         f.append(("fail", "2. Batch/lot number does not match product in hand."))
@@ -125,7 +127,7 @@ def shewhart(values: list[float], baseline_n: int | None = None) -> SPCResult:
     if len(base) < 2:
         raise ValueError("need at least 2 baseline points")
     mean = statistics.mean(base)
-    mr = [abs(b - a) for a, b in zip(base, base[1:])]
+    mr = [abs(b - a) for a, b in itertools.pairwise(base)]
     sigma = (statistics.mean(mr) / 1.128) if mr else 0.0
     ucl, lcl = mean + 3 * sigma, mean - 3 * sigma
     ooc = [i for i, v in enumerate(values) if v > ucl or v < lcl]

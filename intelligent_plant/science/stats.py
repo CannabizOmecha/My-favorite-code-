@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 import random
+import secrets
 import statistics
 from dataclasses import dataclass
 
@@ -59,13 +60,17 @@ def population_hyperparameters(groups: list[list[float]]) -> tuple[float, float,
 
 def interval_coverage(intervals: list[tuple[float, float]], outcomes: list[float]) -> float:
     """Prospective calibration: of 90% intervals, ~90% should contain the outcome."""
-    hits = sum(lo <= y <= hi for (lo, hi), y in zip(intervals, outcomes))
+    hits = sum(lo <= y <= hi for (lo, hi), y in zip(intervals, outcomes, strict=True))
     return hits / len(outcomes) if outcomes else float("nan")
 
 
 def n_of_1_schedule(pairs: int, seed: int | None = None) -> list[str]:
-    """Randomised, balanced A/B pairs for a within-patient crossover (ref 98)."""
-    rng = random.Random(seed)
+    """Randomised, balanced A/B pairs for a within-patient crossover (ref 98).
+
+    Blinding depends on allocation concealment: without a seed the order comes from the
+    operating system's cryptographic RNG, so it cannot be predicted or reproduced by anyone
+    who sees the code or the logs. A seed is for tests and simulation only."""
+    rng: random.Random = random.Random(seed) if seed is not None else secrets.SystemRandom()
     sched: list[str] = []
     for _ in range(pairs):
         pair = ["A", "B"]
@@ -91,7 +96,9 @@ def analyse_n_of_1(schedule: list[str], outcomes: list[float]) -> NOf1Result:
         diffs.append(a - b)
     m = statistics.mean(diffs)
     se = statistics.stdev(diffs) / math.sqrt(len(diffs)) if len(diffs) > 1 else float("inf")
-    tcrit = {2: 2.92, 3: 2.35, 4: 2.13, 5: 2.02, 6: 1.94, 7: 1.89, 8: 1.86}.get(len(diffs) - 1, 1.8)
+    # one-sided 95% / two-sided 90% t critical values by degrees of freedom
+    tcrit = {1: 6.31, 2: 2.92, 3: 2.35, 4: 2.13, 5: 2.02, 6: 1.94, 7: 1.89, 8: 1.86,
+             9: 1.83, 10: 1.81}.get(len(diffs) - 1, 1.8)
     lo, hi = m - tcrit * se, m + tcrit * se
     return NOf1Result(m, lo, hi, len(diffs), conclusive=(lo > 0 or hi < 0))
 

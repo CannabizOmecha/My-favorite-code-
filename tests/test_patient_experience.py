@@ -8,8 +8,13 @@ import pytest
 from intelligent_plant.agents.clinical import ConsultationAgent
 from intelligent_plant.knowledge.interactions import PatientRiskProfile
 from intelligent_plant.orchestrator import IntelligentEnterprise
-from intelligent_plant.patient.communication import (TEMPLATES, URGENT_HELP, PatientMessenger, progress_summary,
-                                                     reading_grade)
+from intelligent_plant.patient.communication import (
+    TEMPLATES,
+    URGENT_HELP,
+    PatientMessenger,
+    progress_summary,
+    reading_grade,
+)
 from intelligent_plant.simulation import NOW, build_world
 
 JARGON = re.compile(r"P-[0-9a-f]{8,}|DDI|CYP|COA|mg/kg|titration|pharmacokinetic|\bAE\b", re.I)
@@ -85,9 +90,66 @@ def test_end_to_end_patient_gets_plain_messages_and_progress():
     assert any("do not take any more today" in t for t in texts)
     assert any(t.startswith("Here is how you are doing") for t in texts)
     assert all(not JARGON.search(t) for t in texts)
-    consult = [d for d in ent.store.all("decision") if d["action"] == "consultation_report"
-               and "chronic_pain_adult" in d["summary"]][0]
+    consult = next(d for d in ent.store.all("decision") if d["action"] == "consultation_report"
+                   and "chronic_pain_adult" in d["summary"])
     assert consult["payload"]["sequence"]["0_patient_priorities"]["goals"] == ["sleep", "walking the dog again"]
     # Weekly cadence: no second summary the next day.
     asyncio.run(ent.run_cycle({}, now=NOW + timedelta(days=1)))
     assert sum(t.startswith("Here is how") for t in (m.text for m in ent.messenger.sent)) == 1
+
+
+# --- swarm-review regressions -------------------------------------------------------------
+
+def test_same_urgent_event_is_not_re_paged_but_a_new_one_always_is():
+    m = PatientMessenger()
+    t = datetime(2026, 11, 19, 14, 0, tzinfo=timezone.utc)
+    for i in range(4):   # the same logged event re-detected every cycle
+        m.send("P1", "oral_redose", {}, t + timedelta(minutes=i), event_id="patient:P1:redose:T1")
+    assert sum(x.urgency == "urgent" for x in m.sent) == 1
+    m.send("P1", "oral_redose", {}, t + timedelta(minutes=5), event_id="patient:P1:redose:T2")
+    assert sum(x.urgency == "urgent" for x in m.sent) == 2
+    # without an event id, urgent is always delivered (fail safe)
+    m.send("P1", "adverse_effect", {}, t + timedelta(minutes=6))
+    m.send("P1", "adverse_effect", {}, t + timedelta(minutes=7))
+    assert sum(x.urgency == "urgent" for x in m.sent) == 4
+
+
+def test_quiet_hours_window_that_does_not_wrap_midnight():
+    from datetime import time
+    m = PatientMessenger(quiet_start=time(1, 0), quiet_end=time(6, 0))
+    assert m.send("P1", "missing_log_fields", {"missing": ["dose_units"]},
+                  datetime(2026, 11, 19, 12, 0, tzinfo=timezone.utc)).delivered
+    assert not m.send("P2", "missing_log_fields", {"missing": ["dose_units"]},
+                      datetime(2026, 11, 19, 3, 0, tzinfo=timezone.utc)).delivered
+
+
+def test_quiet_hours_follow_patient_local_time():
+    m = PatientMessenger(patient_tz={"P1": timezone(timedelta(hours=-8))})
+    # 15:00 UTC is 07:00 in UTC-8: inside the patient's quiet hours
+    assert not m.send("P1", "missing_log_fields", {"missing": ["dose_units"]},
+                      datetime(2026, 11, 19, 15, 0, tzinfo=timezone.utc)).delivered
+
+
+def test_held_message_is_delivered_in_the_morning_and_urgent_never_held():
+    m = PatientMessenger()
+    night = datetime(2026, 11, 19, 23, 0, tzinfo=timezone.utc)
+    assert not m.send("P1", "medication_check", {}, night).delivered
+    assert m.send("P1", "oral_redose", {}, night).delivered          # urgent: through quiet hours
+    released = m.release_held(night + timedelta(hours=10))
+    assert len(released) == 1 and released[0].delivered and not m.held
+
+
+def test_naive_datetime_does_not_crash_routine_send():
+    m = PatientMessenger()
+    m.send("P1", "missing_log_fields", {"missing": ["dose_units"]}, datetime(2026, 11, 19, 12, tzinfo=timezone.utc))
+    m.send("P1", "missing_log_fields", {"missing": ["dose_units"]}, datetime(2026, 11, 19, 13))  # noqa: DTZ001 - naive on purpose
+
+
+def test_repeated_cycles_do_not_re_page_the_patient():
+    ent = IntelligentEnterprise(use_llm=False)
+    world = build_world(ent)
+    for i in range(3):
+        asyncio.run(ent.run_cycle(world, NOW + timedelta(minutes=i)))
+    first = sum(x.urgency == "urgent" for x in ent.messenger.sent)
+    asyncio.run(ent.run_cycle(world, NOW + timedelta(minutes=3)))
+    assert sum(x.urgency == "urgent" for x in ent.messenger.sent) == first > 0

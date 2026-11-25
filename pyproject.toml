@@ -11,7 +11,8 @@ dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
 llm = ["anthropic>=1.0"]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "hypothesis>=6.100", "pytest-cov>=5", "pytest-randomly>=3.15", "ruff>=0.6", "mypy>=1.10",
+       "bandit>=1.7"]
 
 [project.scripts]
 intelligent-plant = "intelligent_plant.__main__:main"
@@ -24,3 +25,43 @@ include = ["intelligent_plant*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = ["stress: whole-system stress/chaos runs (heavier; also run via `python -m intelligent_plant stress`)"]
+filterwarnings = ["error::DeprecationWarning:intelligent_plant.*"]
+
+# --- Quality gates (run in CI; see .github/workflows/tests.yml) -------------------------------
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+# Defect-finding rules only: correctness (F, B), modern Python (UP), simplifications (SIM, RUF),
+# timezone-naive datetimes (DTZ), async pitfalls (ASYNC), security (S), blind excepts (BLE), imports (I).
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "DTZ", "ASYNC", "S", "BLE"]
+ignore = [
+    "E501",    # long lines are a style choice here; the formatter is not imposed on the book's code
+    "E702",    # `a; b` used deliberately in a few numeric one-liners
+    "E731",    # small named lambdas are fine
+    "E741",    # `l` for a log entry is idiomatic in this codebase
+    "S311",    # `random` is only used for seeded synthetic data; clinical randomisation uses `secrets`
+    "RUF001", "RUF002", "RUF003",   # unicode in strings/comments (units, Greek letters) is intended
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]   # pytest uses assert
+
+[tool.mypy]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true
+
+[tool.coverage.run]
+branch = true
+source = ["intelligent_plant"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = ["if __name__ == .__main__.:", "pragma: no cover"]

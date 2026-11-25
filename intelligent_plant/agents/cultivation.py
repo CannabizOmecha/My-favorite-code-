@@ -11,8 +11,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from ..science.environment import (VPD_BANDS_KPA, MPCController, dli, rh_for_target_leaf_vpd, vpd_air,
-                                   vpd_leaf)
+from ..science.environment import VPD_BANDS_KPA, MPCController, dli, rh_for_target_leaf_vpd, vpd_air, vpd_leaf
 from .base import Agent, Context, Proposal
 
 DEFAULT_LEAF_OFFSET_C = 2.0
@@ -24,7 +23,10 @@ PH_RANGE = (5.6, 6.4)
 
 def _cal_ok(reading: dict, today: date) -> bool:
     due = reading.get("sensor_cal_due")
-    return bool(due) and date.fromisoformat(due) >= today
+    if not due:
+        return False
+    # Due today counts as overdue, matching CalibrationWatchdog (conservative).
+    return date.fromisoformat(str(due)) > today
 
 
 class CalibrationWatchdog(Agent):

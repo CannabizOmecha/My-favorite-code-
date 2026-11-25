@@ -60,8 +60,12 @@ class ModelRegistry:
         self._versions.setdefault(card.model_id, []).append(card)
 
     def deploy(self, model_id: str, version: str, approver: str, clinical: bool) -> GateResult:
+        if not str(approver).strip():
+            raise PermissionError("deployment requires a named human approver")
         versions = self._versions[model_id]
-        idx = next(i for i, c in enumerate(versions) if c.version == version)
+        idx = next((i for i, c in enumerate(versions) if c.version == version), None)
+        if idx is None:
+            raise KeyError(f"{model_id} has no version {version!r}")
         gate = deployment_gate(versions[idx], clinical)
         if gate.passed:
             versions[idx].approver = approver

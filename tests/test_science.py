@@ -1,16 +1,16 @@
 """Every worked example in Appendix A, reproduced as a regression test."""
-import math
-
 import numpy as np
 import pytest
 
-from intelligent_plant.science import breeding, chemistry as ch, economics, environment as env, pharmacology as pk
-from intelligent_plant.science import quality, stats
 from intelligent_plant import simulation
+from intelligent_plant.science import breeding, economics, quality, stats
+from intelligent_plant.science import chemistry as ch
+from intelligent_plant.science import environment as env
+from intelligent_plant.science import pharmacology as pk
 
 
 def test_total_thc_factor_is_mw_ratio():
-    assert ch.ACID_TO_NEUTRAL == pytest.approx(0.8772, abs=1e-4)
+    assert pytest.approx(0.8772, abs=1e-4) == ch.ACID_TO_NEUTRAL
     assert ch.total_thc(1.0, 20.0) == pytest.approx(1.0 + 0.877 * 20.0, rel=1e-3)
 
 
@@ -22,7 +22,7 @@ def test_decarb_half_life_and_t99_at_110C():
 
 def test_arrhenius_fit_matches_book():
     assert ch.THCA_FIT.Ea_kJ == pytest.approx(87.1, abs=0.1)
-    assert ch.THCA_FIT.A == pytest.approx(1.40e9, rel=0.01)
+    assert pytest.approx(1.40e9, rel=0.01) == ch.THCA_FIT.A
     assert ch.time_to_conversion_s(ch.THCA_FIT.k(130), 0.99) / 60 == pytest.approx(10.5, abs=0.1)
     assert ch.time_to_conversion_s(ch.THCA_FIT.k(145), 0.99) / 60 == pytest.approx(4.1, abs=0.1)
 
@@ -169,3 +169,27 @@ def test_sustainability_metrics():
     m = economics.sustainability_metrics(100_000, 50_000, 40_000, 200_000, 50_000, 1, 0.5, 0.4, 0, 25, [500, 520, 480])
     assert m.energy_kwh_per_kg == 4000 and m.hvac_share_pct == 40 and m.water_l_per_kg == 6000
     assert env.grams_per_kwh(2.7, 0.9, 1.0) == pytest.approx(2.7 * 3.6 * 0.9)
+
+
+def test_n_of_1_two_pairs_not_falsely_conclusive():
+    from intelligent_plant.science.stats import analyse_n_of_1
+    r = analyse_n_of_1(["A", "B", "B", "A"], [5, 3, 4, 5])
+    assert r.lo90 < 0 < r.hi90 and not r.conclusive
+
+
+def test_mpc_fail_safe_does_not_cool_a_cold_room():
+    from intelligent_plant.science.environment import MPCController
+    res = MPCController().solve(T=15.0, rh=55, T_target=24, vpd_target=1.0, leaf_offset_c=1.0, price_per_kwh=[0.2])
+    assert res.action[0] == 0.0
+
+
+def test_280e_loss_never_yields_negative_tax():
+    assert economics.tax_under_280e(100, 200, 10).tax == 0.0
+    assert economics.tax_under_280e(100, 50, 80, subject_to_280e=False).tax == 0.0
+
+
+@pytest.mark.parametrize("method,flagged", [("GC", True), ("GC-FID", True), ("gc-ms", True),
+                                            ("GC-MS derivatized", False), ("HPLC", False)])
+def test_coa_audit_flags_every_underivatized_gc_variant(method, flagged):
+    r = quality.audit_coa(simulation.make_coa("C", "B", 0.5, 20, 0, 0, method=method))
+    assert any("GC without derivatization" in m for _, m in r.findings) == flagged

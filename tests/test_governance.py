@@ -1,7 +1,7 @@
 """Safety and governance invariants: what the swarm may and may not do on its own."""
 import asyncio
 import sqlite3
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 
 import pytest
 
@@ -259,3 +259,175 @@ def test_deployment_gate_and_rollback():
 def test_maturity_is_sequential():
     lvl, _, _ = assess_maturity(True, False, True, True, True, True, True, True)
     assert lvl == 1   # cannot claim predictive capability on ungoverned data
+
+
+# ------------------------------------------------------------------ swarm-review regressions (agents)
+@pytest.mark.parametrize("payload", [{"advice": {"dose_mg": 5}}, {"dose_mg_thc": 5}, {"next_dose_mg": 10},
+                                     {"steps": [{"starting_dose_mg": 2.5}]}])
+def test_dose_numbers_are_vetoed_at_any_depth_and_name(payload):
+    p = Proposal("rogue", "patient_reminder", "remind", payload)
+    assert run(Swarm([OneShot(p)], default_critics(False)).cycle(ctx())).dispositions[0].outcome == "vetoed"
+
+
+def test_self_declared_clinician_agent_cannot_originate_doses():
+    p = Proposal("clinician", "titration_step", "increase", {"dose_mg": 10}, uncertainty="x", evidence=["e"])
+    assert run(Swarm([OneShot(p)], default_critics(False)).cycle(ctx())).dispositions[0].outcome == "vetoed"
+
+
+def test_failing_actuator_alarms_and_still_logs():
+    def boom(p, c):
+        raise ConnectionError("pager offline")
+    p = Proposal("ok", "data_logging", "log")
+    c = ctx()
+    r = run(Swarm([OneShot(p)], default_critics(False), actuators={"data_logging": boom}).cycle(c))
+    assert r.dispositions[0].outcome == "actuation_failed"
+    assert any(a["level"] == "alarm" for a in c.alerts)
+    assert c.store.verify_chain()[0] and {d["disposition"] for d in c.store.all("decision")} == {"actuation_failed"}
+
+
+def test_crashed_safety_expert_blocks_product_recommendation():
+    """A safety screen that crashes has not cleared the patient (fail closed)."""
+    ent = IntelligentEnterprise(use_llm=False)
+    pt = {"status": "new_consult", "indication": "chronic_pain_adult", "standard_care_tried": True,
+          "profile": PatientRiskProfile(age=None, pregnant_or_lactating=True)}
+    from intelligent_plant.simulation import make_coa
+    cat = [{"product_id": "PR-OIL-20", "form": "tincture", "route": "oral", "unit_mg_thc": 0.5, "unit_mg_cbd": 10.0,
+            "coa": make_coa("C-101F", "B-101", 0.02, 0.0, 1.1, 0.0, form="tincture", finished=True),
+            "batch_cv": 0.05, "available_months": 12}]
+    out = run(ConsultationAgent().propose(ent.context({"patients": {"P1": pt}, "product_catalog": cat})))
+    report = next(p for p in out if p.task == "consultation_report")
+    assert any("unassessed" in f for f in report.payload["flags"])
+    assert not any(p.task == "product_recommendation" for p in out)
+
+
+def test_one_bad_patient_record_does_not_silence_others():
+    from intelligent_plant.agents.clinical import TitrationMonitorAgent
+    plan = TitrationPlan("A", "dr", ["clinician step 1"], 24, 42, 2.0, NOW)
+    good_logs = [{"timestamp": "2026-11-17T14:00:00+00:00", "route": "oral", "product_id": "X", "dose_units": 1},
+                 {"timestamp": "2026-11-17T14:45:00+00:00", "route": "oral", "product_id": "X", "dose_units": 1,
+                  "adverse_effects": [{"name": "dizziness", "severity": "Severe"}]}]
+    pts = {"A": {"plan": plan, "logs": good_logs, "profile": PatientRiskProfile(age=40)},
+           "B": {"plan": plan, "logs": [{"timestamp": "2026-11-2 10:00"}, {"timestamp": "bad"}],
+                 "profile": PatientRiskProfile(age=40)}}
+    out = run(TitrationMonitorAgent().propose(ent_ctx({"patients": pts})))
+    a_alerts = {p.payload.get("patient_event") for p in out if p.payload.get("patient_id") == "A"}
+    assert {"oral_redose", "adverse_effect"} <= a_alerts            # "Severe" (capitalised) still counts
+    assert any(p.payload.get("patient_id") == "B" and p.task == "safety_alert" for p in out)
+
+
+def ent_ctx(obs):
+    return IntelligentEnterprise(use_llm=False).context(obs)
+
+
+def test_moe_zero_confidence_does_not_crash_or_drop_flags():
+    from intelligent_plant.agents.moe import Expert, ExpertOpinion, MixtureOfExperts
+
+    class Zero(Expert):
+        name, keywords = "zero", ("x",)
+
+        async def opine(self, q, c):
+            return ExpertOpinion(self.name, "yes", 0.0, ["[STOP] keep me"], question="q")
+    moe = MixtureOfExperts([Zero()])
+    res = run(moe.consult({"a": "x"}, ctx()))
+    assert res.answers["q"] == ("yes", 0.0) and "[STOP] keep me" in res.flags
+    assert MixtureOfExperts([]).gate({}) == {}
+    with pytest.raises(ValueError):
+        MixtureOfExperts([Zero()], temperature=0)
+
+
+def test_parse_json_object_takes_first_object():
+    from intelligent_plant.agents.llm import parse_json_object
+    assert parse_json_object('ok {"severity": "warn", "message": "a"} and {"b": 1}') == {"severity": "warn",
+                                                                                         "message": "a"}
+
+
+# ------------------------------------------------------------------ swarm-review regressions (governance/data)
+@pytest.mark.parametrize("meds,cannabinoids", [(["St. John's Wort"], {"CBD"}), (["ciclosporin"], {"CBD"}),
+                                               (["Coumadin"], {"THC"}), (["codeine"], {"THC"}),
+                                               (["tramadol"], {"CBD"}), (["clobazam"], {"Cannabidiol"}),
+                                               (["clobazam"], set()), (["clobazam"], {"unknown oil"})])
+def test_interaction_checks_fail_closed_on_names_and_aliases(meds, cannabinoids):
+    assert check_interactions(meds, cannabinoids)
+
+
+def test_narrow_ti_covers_valproate_forms_and_missing_age_fails_closed():
+    for med in ("valproic acid", "Divalproex", "ciclosporin"):
+        assert any(f.code == "NARROW_TI" for f in screen_contraindications(PatientRiskProfile(age=40, medications=[med])))
+    codes = {f.code: f.level for f in screen_contraindications(PatientRiskProfile(age=None, pregnant_or_lactating=True))}
+    assert codes["AGE_UNKNOWN"] == "stop" and codes["PREGNANCY"] == "stop"
+
+
+def test_redaction_covers_whole_risk_profile_and_nested_fields():
+    from dataclasses import asdict
+    rec = asdict(PatientRiskProfile(age=30, medications=["warfarin"], psychosis_history_personal=True,
+                                    cyp2c9_genotype="*1/*3"))
+    rec["nested"] = {"synthase_genotype": "BT/BD", "ok": 1}
+    v = redact_for_role(rec, "grower")
+    for k in ("medications", "psychosis_history_personal", "cyp2c9_genotype", "substance_use_disorder_history"):
+        assert v[k] == "[REDACTED]"
+    assert v["nested"] == {"synthase_genotype": "[REDACTED]", "ok": 1} and v["age"] == 30
+
+
+def test_persistent_vault_requires_a_key(tmp_path):
+    with pytest.raises(ValueError):
+        PseudonymVault(str(tmp_path / "v.db"))
+    k = b"k" * 32
+    a = PseudonymVault(str(tmp_path / "v.db"), key=k).pseudonymize("Jane")
+    assert PseudonymVault(str(tmp_path / "v.db"), key=k).pseudonymize("Jane") == a
+
+
+def test_approval_owner_comes_from_policy_and_decisions_are_final():
+    from intelligent_plant.governance.autonomy import ApprovalRequest, policy_for
+    q = ApprovalQueue()
+    with pytest.raises(PermissionError):
+        q.submit(ApprovalRequest("p", "dose_selection", "treating_clinician", "s", {}, [], []))
+    with pytest.raises(PermissionError):
+        q.submit(ApprovalRequest("p", "product_recommendation", "data_steward", "s", {}, [], []))
+    r = q.submit(ApprovalRequest("p", "product_recommendation", "treating_clinician", "s", {}, [], []))
+    q.decide(r.request_id, False, "Dr", "treating_clinician")
+    with pytest.raises(ValueError):
+        q.decide(r.request_id, True, "Dr", "treating_clinician")
+    assert policy_for(" Dose_Selection ").autonomy == policy_for("dose_selection").autonomy
+
+
+def test_hemp_cap_fails_closed_on_unknown_or_nan():
+    from datetime import date
+    cfg = load_jurisdictions()
+    on = date(2027, 1, 1)
+    assert not check_hemp_product(cfg, on, 0.1, 0.1, None, False).compliant
+    assert not check_hemp_product(cfg, on, 0.1, float("nan"), 0.1, False).compliant
+    assert not check_hemp_product(cfg, on, 0.1, 0.1, float("nan"), False).compliant
+
+
+def test_chain_truncation_detected_against_anchor_and_ids_do_not_collide():
+    s = RecordStore()
+    rec = {"batch_id": "B1", "genotype_id": "G", "room_id": "R", "start_date": "2026-01-01", "yield_g": 100}
+    s.append("batch", rec, P)
+    s.append("batch", {**rec, "batch_id": "B2"}, P)
+    head, n = s.head()
+    s._db.execute("DELETE FROM records WHERE seq=(SELECT MAX(seq) FROM records)")
+    assert s.verify_chain()[0]                                  # links alone cannot see a cut tail
+    assert not s.verify_chain(expected_head=head, expected_count=n)[0]
+    assert s._entity_id("environment_log", {"room_id": "A|2026", "timestamp": "x"}) != \
+        s._entity_id("environment_log", {"room_id": "A", "timestamp": "2026|x"})
+
+
+def test_non_numeric_value_is_rejected_not_crashing_bulk_ingest():
+    from intelligent_plant.data.store import bulk_append
+    s = RecordStore()
+    rec = {"batch_id": "B1", "genotype_id": "G", "room_id": "R", "start_date": "2026-01-01", "yield_g": "n/a"}
+    ok, rejected = bulk_append(s, "batch", [rec, {**rec, "batch_id": "B2", "yield_g": 5}], P)
+    assert (ok, len(rejected)) == (1, 1)
+
+
+def test_integer_calibrated_flag_verifies():
+    s = RecordStore()
+    s.append("batch", {"batch_id": "B1", "genotype_id": "G", "room_id": "R", "start_date": "2026-01-01"},
+             Provenance("t", "op", calibrated=1))
+    assert s.verify_chain() == (True, None)
+
+
+def test_deploy_requires_named_approver():
+    reg = ModelRegistry()
+    with pytest.raises(PermissionError):
+        reg.deploy("m", "1", "  ", clinical=False)

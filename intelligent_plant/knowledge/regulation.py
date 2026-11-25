@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import math
 from dataclasses import dataclass
 from datetime import date
 from importlib import resources
@@ -41,11 +42,16 @@ def check_hemp_product(config: dict, on: date, delta9_pct: float, total_thc_pct:
     rule = hemp_rule_on(config, on)
     reasons = []
     level = total_thc_pct if rule.get("basis") == "total_thc" else delta9_pct
-    if level > rule.get("max_pct", 0.3):
+    if level is None or math.isnan(level):
+        reasons.append(f"{rule.get('basis')} not measured; compliance cannot be shown.")
+    elif level > rule.get("max_pct", 0.3):
         reasons.append(f"{rule.get('basis')} {level:.3f}% exceeds {rule.get('max_pct')}% dry weight.")
     cap = rule.get("per_container_total_thc_mg")
-    if cap is not None and container_total_thc_mg is not None and container_total_thc_mg > cap:
-        reasons.append(f"{container_total_thc_mg} mg total THC per container exceeds {cap} mg cap.")
+    if cap is not None:   # unknown or unmeasurable totals fail closed once a cap applies
+        if container_total_thc_mg is None or math.isnan(container_total_thc_mg):
+            reasons.append(f"Per-container total THC unknown; the {cap} mg cap applies.")
+        elif container_total_thc_mg > cap:
+            reasons.append(f"{container_total_thc_mg} mg total THC per container exceeds {cap} mg cap.")
     if rule.get("exclude_non_naturally_produced_cannabinoids") and contains_synthesized:
         reasons.append("Contains cannabinoids synthesized outside the plant or not naturally produced.")
     return HempVerdict(not reasons, reasons, f"rules effective on {on.isoformat()}: {rule}")

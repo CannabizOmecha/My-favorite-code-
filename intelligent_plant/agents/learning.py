@@ -60,11 +60,18 @@ class QuantumPortfolioAgent(Agent):
         if not cands or K is None or len(cands) < 3:
             return []
         scores = [patient_first_index(c, b["target_ratio"]) for c in cands]
-        value = np.array([(2 * s["consistency"] + s["contamination_resistance"] + s["terpene_stability"]
-                           + 0.5 * s["efficiency"]) if s["eligible"] else -5.0 for s in scores])
-        k = int(b.get("advance_k", min(3, len(cands) - 1)))
-        d = decide(portfolio_qubo(value, np.asarray(K, float), k, diversity_weight=b.get("diversity_weight", 4.0)))
-        chosen = [c.name for c, x in zip(cands, d.chosen.best_bits) if x]
+        # Ineligible cultivars are removed before optimisation: a cardinality penalty would
+        # otherwise force them into the set whenever fewer than k are eligible.
+        idx = [i for i, s in enumerate(scores) if s["eligible"]]
+        k = min(int(b.get("advance_k", min(3, len(cands) - 1))), len(idx))
+        if k < 1:
+            return []
+        cands, scores = [cands[i] for i in idx], [scores[i] for i in idx]
+        K = np.asarray(K, float)[np.ix_(idx, idx)]
+        value = np.array([2 * s["consistency"] + s["contamination_resistance"] + s["terpene_stability"]
+                          + 0.5 * s["efficiency"] for s in scores])
+        d = decide(portfolio_qubo(value, K, k, diversity_weight=b.get("diversity_weight", 4.0)))
+        chosen = [c.name for c, x in zip(cands, d.chosen.best_bits, strict=True) if x]
         q = d.quantum
         return [Proposal(self.name, "breeding_selection",
                          f"Advance {chosen} (k={k}, diversity-aware). Solver: {d.chosen.method}. {d.rationale}",

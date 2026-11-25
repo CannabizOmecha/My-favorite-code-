@@ -7,8 +7,12 @@ import math
 import numpy as np
 import pytest
 
-from intelligent_plant.learning.continual import ChampionChallengerLoop, RecursiveBayesianRegressor, evaluate, \
-    t_quantile_95
+from intelligent_plant.learning.continual import (
+    ChampionChallengerLoop,
+    RecursiveBayesianRegressor,
+    evaluate,
+    t_quantile_95,
+)
 from intelligent_plant.quantum import algorithms as qa
 from intelligent_plant.quantum.advantage import decide, portfolio_qubo
 from intelligent_plant.quantum.statevector import MAX_QUBITS, Statevector, bell_pair, pauli_matrix
@@ -199,3 +203,68 @@ def test_agents_in_full_cycle():
     assert not {"Fairland CBD-20", "Fairland CBD-20 sib"} <= set(sel)
     assert port.outcome == "queued"                          # a breeder decides
     assert ent.learning_loops["yield_g_m2"].champion_version == 1
+
+
+# --- swarm-review regressions -------------------------------------------------------------
+
+def test_clinical_model_is_suspended_when_it_degrades():
+    """'Abstain when degraded' must hold for clinical models too (validation baseline recorded
+    at human approval)."""
+    rng = np.random.default_rng(0)
+    loop = ChampionChallengerLoop("dose_response", 3, "owner", "s", ["x"], clinical=True)
+    suspended_after_shift = False
+    for i, (x, y) in enumerate(_stream(1300, rng, shift_at=800)):
+        loop.observe(x, y)
+        if i % 100 == 99:
+            r = loop.step()
+            if r.pending_human_approval and loop.champion is None:
+                loop.approve_pending("owner")
+            if i >= 800 and loop.suspended:
+                suspended_after_shift = True
+    assert loop.champion_validation is not None and suspended_after_shift
+
+
+def test_non_finite_outcome_is_rejected():
+    loop = ChampionChallengerLoop("m", 3, "owner", "s", ["x"])
+    with pytest.raises(ValueError):
+        loop.observe([0, 0, 0], float("nan"))
+    with pytest.raises(ValueError):
+        loop.observe([0, float("inf"), 0], 1.0)
+
+
+def test_gate_rescores_backend_bits_instead_of_trusting_reported_energy():
+    from intelligent_plant.quantum.algorithms import OptimisationResult
+
+    class Liar:
+        name = "hardware"
+
+        def solve_qubo(self, Q):
+            return OptimisationResult("liar", [0] * Q.shape[0], -999.0)
+    Q = portfolio_qubo(np.array([3.0, 2.0, 1.0, 0.5, 0.2]), np.zeros((5, 5)), 2)
+    d = decide(Q, backend=Liar())
+    assert not d.quantum_used and d.quantum.best_energy == 0.0
+
+
+@pytest.mark.parametrize("n,marked", [(2, {0, 1, 2}), (3, {0, 1, 2, 3, 4, 5}), (4, set(range(9)))])
+def test_grover_never_worse_than_guessing_when_many_states_marked(n, marked):
+    r = qa.grover_search(n, marked)
+    assert r.success_probability >= len(marked) / 2 ** n - 1e-9
+
+
+def test_grover_rejects_out_of_range_marks():
+    with pytest.raises(ValueError):
+        qa.grover_search(3, {-1})
+
+
+def test_portfolio_never_advances_ineligible_cultivars():
+    from intelligent_plant.agents.learning import QuantumPortfolioAgent
+    from intelligent_plant.orchestrator import IntelligentEnterprise
+    from intelligent_plant.simulation import build_world
+    ent = IntelligentEnterprise(use_llm=False)
+    b = dict(build_world(ent)["breeding"])
+    agent = QuantumPortfolioAgent()
+    from intelligent_plant.science.breeding import patient_first_index
+    elig = [c.name for c in b["candidates"] if patient_first_index(c, b["target_ratio"])["eligible"]]
+    b["advance_k"] = len(elig) + 2          # ask for more than are eligible
+    props = asyncio.run(agent.propose(ent.context({"breeding": b})))
+    assert props and set(props[0].payload["selected"]) <= set(elig)

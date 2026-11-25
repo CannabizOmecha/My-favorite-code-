@@ -15,7 +15,7 @@ import re
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone, tzinfo
 
 URGENT_HELP = ("Get help right away (call 911) for chest pain, fainting, trouble breathing, or severe "
                "confusion. If a child may have eaten a cannabis product, call 911 or Poison Control at "
@@ -87,13 +87,26 @@ class PatientMessenger:
     quiet_start: time = time(21, 0)
     quiet_end: time = time(8, 0)
     dedupe_window: timedelta = timedelta(hours=24)
+    tz: tzinfo = timezone.utc                 # default patient-local time zone for quiet hours and daily caps
+    patient_tz: dict[str, tzinfo] = field(default_factory=dict)
     sent: list[PatientMessage] = field(default_factory=list)
     held: list[PatientMessage] = field(default_factory=list)
+    suppressed: list[PatientMessage] = field(default_factory=list)   # duplicates, kept for audit
     _last_by_key: dict = field(default_factory=dict)
+    _delivered_events: set = field(default_factory=set)
+    _held_meta: dict = field(default_factory=dict)   # id(msg) -> (event, payload)
 
-    def _quiet(self, t: datetime) -> bool:
-        tt = t.time()
-        return tt >= self.quiet_start or tt < self.quiet_end
+    @staticmethod
+    def _aware(t: datetime) -> datetime:
+        return t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
+
+    def _local(self, patient_id: str, t: datetime) -> datetime:
+        return self._aware(t).astimezone(self.patient_tz.get(patient_id, self.tz))
+
+    def _quiet(self, t: datetime, patient_id: str | None = None) -> bool:
+        tt = self._local(patient_id, t).time() if patient_id is not None else self._aware(t).astimezone(self.tz).time()
+        s, e = self.quiet_start, self.quiet_end
+        return (s <= tt < e) if s <= e else (tt >= s or tt < e)
 
     def compose(self, event: str, payload: dict) -> tuple[str, str]:
         urgency, tpl = TEMPLATES[event]
@@ -108,30 +121,82 @@ class PatientMessenger:
             text += " " + URGENT_HELP
         return urgency, text
 
-    def send(self, patient_id: str, event: str, payload: dict, now: datetime) -> PatientMessage:
+    def send(self, patient_id: str, event: str, payload: dict, now: datetime,
+             event_id: str | None = None) -> PatientMessage:
+        """Urgent messages are always delivered, once per distinct event (`event_id`, e.g. the
+        log timestamp): a new urgent event always gets through; the same one is not re-paged
+        every cycle. Routine messages are de-duplicated, capped per local day and held during
+        the patient's local quiet hours; held messages are released by `release_held`."""
+        now = self._aware(now)
         urgency, text = self.compose(event, payload)
         msg = PatientMessage(patient_id, urgency, text, now)
-        key = (patient_id, event)
-        last = self._last_by_key.get(key)
+        if not text.strip():
+            msg.held_reason = "nothing to say"
+            return msg
+        if urgency == "urgent" and event_id is not None and (patient_id, event, event_id) in self._delivered_events:
+            msg.held_reason = "already delivered for this event"
+            self.suppressed.append(msg)
+            return msg
         if urgency != "urgent":
-            today = [m for m in self.sent if m.patient_id == patient_id and m.urgency == "routine"
-                     and m.created_at.date() == now.date()]
-            if last and now - last < self.dedupe_window:
-                msg.held_reason = "duplicate within 24 h"
-            elif len(today) >= self.max_routine_per_day:
-                msg.held_reason = "daily limit for routine messages reached"
-            elif self._quiet(now):
-                msg.held_reason = "quiet hours; will send in the morning"
+            msg.held_reason = self._routine_block(patient_id, event, now)
         if msg.held_reason:
-            self.held.append(msg)
+            if msg.held_reason == "duplicate within 24 h":   # already said; never re-sent
+                self.suppressed.append(msg)
+            else:
+                self.held.append(msg)
+                self._held_meta[id(msg)] = event
         else:
-            msg.delivered = True
-            self.sent.append(msg)
-            self._last_by_key[key] = now
+            self._deliver(msg, event, now)
+            if urgency == "urgent" and event_id is not None:
+                self._delivered_events.add((patient_id, event, event_id))
         return msg
 
+    def _routine_block(self, patient_id: str, event: str, now: datetime) -> str | None:
+        last = self._last_by_key.get((patient_id, event))
+        today_local = self._local(patient_id, now).date()
+        today = [m for m in self.sent if m.patient_id == patient_id and m.urgency == "routine"
+                 and self._local(patient_id, m.created_at).date() == today_local]
+        if last and now - last < self.dedupe_window:
+            return "duplicate within 24 h"
+        if len(today) >= self.max_routine_per_day:
+            return "daily limit for routine messages reached"
+        if self._quiet(now, patient_id):
+            return "quiet hours; will send in the morning"
+        return None
+
+    def _deliver(self, msg: PatientMessage, event: str, now: datetime) -> None:
+        msg.delivered, msg.held_reason = True, None
+        self.sent.append(msg)
+        self._last_by_key[(msg.patient_id, event)] = now
+
+    def release_held(self, now: datetime) -> list[PatientMessage]:
+        """Deliver held routine messages once quiet hours / daily caps allow. A held message
+        superseded by a delivered message of the same kind is dropped rather than repeated."""
+        now = self._aware(now)
+        released, still = [], []
+        for msg in self.held:
+            event = self._held_meta.get(id(msg))
+            if event is None:
+                msg.held_reason = "unknown event"
+                still.append(msg)
+                continue
+            block = self._routine_block(msg.patient_id, event, now)
+            if block is None:
+                self._held_meta.pop(id(msg), None)
+                self._deliver(msg, event, now)
+                released.append(msg)
+            elif block == "duplicate within 24 h":
+                self._held_meta.pop(id(msg), None)        # same message already reached the patient
+                msg.held_reason = block
+                self.suppressed.append(msg)
+            else:
+                msg.held_reason = block
+                still.append(msg)
+        self.held = still
+        return released
+
     def stats(self) -> dict:
-        per_patient = defaultdict(int)
+        per_patient: defaultdict[str, int] = defaultdict(int)
         for m in self.sent:
             per_patient[m.patient_id] += 1
         return {"delivered": len(self.sent), "held": len(self.held),

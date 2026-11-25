@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import abc
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from ..governance.ethics import OBJECTIVES
 
@@ -45,11 +46,11 @@ class Objection:
 
 @dataclass
 class Context:
-    store: "RecordStore"
-    approvals: "ApprovalQueue"
-    registry: "ModelRegistry"
+    store: RecordStore
+    approvals: ApprovalQueue
+    registry: ModelRegistry
     config: dict
-    llm: "ClaudeReasoner | None" = None
+    llm: ClaudeReasoner | None = None
     now: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     observations: dict[str, Any] = field(default_factory=dict)   # live feeds keyed by domain
     alerts: list[dict] = field(default_factory=list)

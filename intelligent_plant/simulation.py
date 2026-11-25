@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 from datetime import date, datetime, timedelta, timezone
+from typing import Any
 
 import numpy as np
 
@@ -80,10 +81,12 @@ def seed_registry_records(ent, n_patients: int = 12, seed: int = 7) -> None:
 def patient_logs(n: int, start: datetime, *, oral_redose_at: int | None = None,
                  ae_at: int | None = None, seed: int = 3) -> list[dict]:
     rng = random.Random(seed)
-    logs, t = [], start
+    logs: list[dict[str, Any]] = []
+    t = start
     for i in range(n):
         t = t + timedelta(hours=24)
-        ts = t if oral_redose_at != i else logs[-1]["_t"] + timedelta(minutes=45)
+        prev_t: datetime = logs[-1]["_t"] if logs else t
+        ts = t if oral_redose_at != i else prev_t + timedelta(minutes=45)
         pre = rng.uniform(5.5, 7.5)
         logs.append({"_t": ts, "timestamp": ts.isoformat(), "product_id": "PR-OIL-20", "batch_lot": "L-101",
                      "total_thc_unit": 0.5, "total_cbd_unit": 10.0, "dose_units": 1, "dose_mg_thc": 0.5,
@@ -128,22 +131,22 @@ def build_world(ent) -> dict:
     seed_registry_records(ent)
     ent.learning_loops["yield_g_m2"] = yield_learning_loop()
     # Patients (identities go straight into the vault; agents see pseudonyms only)
-    p_new = ent.enroll_patient("Jane Example, DOB 1971-03-02",
-                               {"age_band": "55-64", "indication": "chronic_pain_adult", "consent_version": "v3"},
-                               {"status": "new_consult", "indication": "chronic_pain_adult", "standard_care_tried": True,
-                                "onset_need": "sustained", "food_relation": "variable",
-                                "preferences": {"avoid_psychoactivity": True, "route_preference": "oral",
-                                                "goals": ["sleep", "walking the dog again"]},
-                                "profile": PatientRiskProfile(age=55, medications=["warfarin", "lorazepam"],
-                                                              cyp2c9_genotype="*1/*3")})
-    p_young = ent.enroll_patient("Sam Example, DOB 2003-06-10",
-                                 {"age_band": "18-24", "indication": "ptsd", "consent_version": "v3"},
-                                 {"status": "new_consult", "indication": "ptsd", "standard_care_tried": False,
-                                  "profile": PatientRiskProfile(age=23, psychosis_history_family_strong=True)})
-    p_peds = ent.enroll_patient("Child Example",
-                                {"age_band": "0-17", "indication": "dravet", "consent_version": "v3"},
-                                {"status": "new_consult", "indication": "dravet",
-                                 "profile": PatientRiskProfile(age=9, medications=["clobazam", "valproate"])})
+    ent.enroll_patient("Jane Example, DOB 1971-03-02",
+                       {"age_band": "55-64", "indication": "chronic_pain_adult", "consent_version": "v3"},
+                       {"status": "new_consult", "indication": "chronic_pain_adult", "standard_care_tried": True,
+                        "onset_need": "sustained", "food_relation": "variable",
+                        "preferences": {"avoid_psychoactivity": True, "route_preference": "oral",
+                                        "goals": ["sleep", "walking the dog again"]},
+                        "profile": PatientRiskProfile(age=55, medications=["warfarin", "lorazepam"],
+                                                      cyp2c9_genotype="*1/*3")})
+    ent.enroll_patient("Sam Example, DOB 2003-06-10",
+                       {"age_band": "18-24", "indication": "ptsd", "consent_version": "v3"},
+                       {"status": "new_consult", "indication": "ptsd", "standard_care_tried": False,
+                        "profile": PatientRiskProfile(age=23, psychosis_history_family_strong=True)})
+    ent.enroll_patient("Child Example",
+                       {"age_band": "0-17", "indication": "dravet", "consent_version": "v3"},
+                       {"status": "new_consult", "indication": "dravet",
+                        "profile": PatientRiskProfile(age=9, medications=["clobazam", "valproate"])})
     p_tit = ent.enroll_patient("Alex Example, DOB 1960-01-01",
                                {"age_band": "65-74", "indication": "chronic_pain_adult", "consent_version": "v3"},
                                {"indication": "chronic_pain_adult", "meds_changed": True,
@@ -166,8 +169,8 @@ def build_world(ent) -> dict:
          "coa": make_coa("C-303", "B-303", 1.0, 26.0, 0.1, 0.1), "batch_cv": 0.08, "available_months": 3},
     ]
     breeding = {
-        "traits": {"chemotype_ratio": dict(zip(("X", "y"), oligogenic_trait())),
-                   "yield": dict(zip(("X", "y"), polygenic_trait()))},
+        "traits": {"chemotype_ratio": dict(zip(("X", "y"), oligogenic_trait(), strict=True)),
+                   "yield": dict(zip(("X", "y"), polygenic_trait(), strict=True))},
         "candidates": CANDIDATES,
         "target_ratio": 20.0, "kinship_mean": 0.015, "advance_k": 3,
         "kinship": KINSHIP,

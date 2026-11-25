@@ -3,10 +3,12 @@ patient outcome and back (Chapter 16, Figure 16.1)."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable
+from datetime import datetime, timezone
+from typing import Any
 
 from .agents.base import Context, Proposal
 from .agents.breeding import breeding_agents
@@ -19,11 +21,12 @@ from .agents.llm import ClaudeReasoner
 from .agents.processing import processing_agents
 from .agents.swarm import CycleReport, Swarm, default_critics
 from .data.privacy import PseudonymVault
-from .patient.communication import PatientMessenger
 from .data.store import Provenance, RecordStore
 from .governance.autonomy import ApprovalQueue, ApprovalRequest
 from .governance.registry import ModelRegistry
 from .knowledge.regulation import load_jurisdictions
+from .patient.communication import PatientMessenger
+from .science.stats import n_of_1_schedule
 
 log = logging.getLogger(__name__)
 
@@ -43,9 +46,9 @@ class FacilityState:
 
 class IntelligentEnterprise:
     def __init__(self, db_path: str = ":memory:", vault_path: str = ":memory:", use_llm: bool | None = None,
-                 jury: bool = True, config_path: str | None = None):
+                 jury: bool = True, config_path: str | None = None, vault_key: bytes | None = None):
         self.store = RecordStore(db_path)
-        self.vault = PseudonymVault(vault_path)
+        self.vault = PseudonymVault(vault_path, key=vault_key)
         self.approvals = ApprovalQueue()
         self.registry = ModelRegistry()
         self.config = load_jurisdictions(config_path)
@@ -58,6 +61,7 @@ class IntelligentEnterprise:
                   + clinical_agents() + enterprise_agents() + learning_agents())
         self.swarm = Swarm(agents, default_critics(with_jury=jury and self.llm.available), actuators=self._actuators())
         self.history: list[CycleReport] = []
+        self._n_of_1_allocations: dict[str, list[str]] = {}   # concealed; see n_of_1_allocation()
 
     # ------------------------------------------------------------ actuators
     def _actuators(self) -> dict[str, Callable[[Proposal, Context], Any]]:
@@ -78,7 +82,8 @@ class IntelligentEnterprise:
                 s.outbox.append({"to": staff, "patient_id": p.payload.get("patient_id"), "task": p.task,
                                  "text": p.summary})
             if "patient" in to and p.payload.get("patient_event"):
-                self.messenger.send(p.payload["patient_id"], p.payload["patient_event"], p.payload, ctx.now)
+                self.messenger.send(p.payload["patient_id"], p.payload["patient_event"], p.payload, ctx.now,
+                                    event_id=p.target)
             if p.task == "patient_progress_summary" and p.payload.get("patient_id") in self.patients:
                 self.patients[p.payload["patient_id"]]["last_summary_at"] = ctx.now
 
@@ -109,9 +114,20 @@ class IntelligentEnterprise:
             if loop:
                 loop.approve_pending(loop.owner)
 
+        def n_of_1(p: Proposal, ctx: Context) -> None:   # only reached after clinician approval
+            pid = p.payload["patient_id"]
+            pt = self.patients.get(pid)
+            plan: TitrationPlan | None = pt.get("plan") if pt else None
+            if not plan or plan.n_of_1_enrolled:
+                return
+            # Cryptographic RNG; held for the unblinded pharmacist, never in the clinician's view.
+            self._n_of_1_allocations[pid] = n_of_1_schedule(int(p.payload.get("pairs", 4)))
+            plan.n_of_1_enrolled = True
+            plan.history.append({"at": ctx.now.isoformat(), "action": "n_of_1_enrolled"})
+
         def titration(p: Proposal, ctx: Context) -> None:   # only reached after clinician approval
             pt = self.patients.get(p.payload["patient_id"])
-            plan: TitrationPlan | None = pt and pt.get("plan")
+            plan: TitrationPlan | None = pt.get("plan") if pt else None
             if not plan:
                 return
             act = p.payload["action"]
@@ -128,7 +144,15 @@ class IntelligentEnterprise:
                 "patient_progress_summary": message,
                 "batch_hold": hold, "batch_release": release, "calibration_schedule": work_order,
                 "irrigation_schedule": irrigate, "lighting_energy": dim, "hemp_compliance_check": quarantine,
-                "model_rollback": rollback, "titration_step": titration, "model_deployment": promote}
+                "model_rollback": rollback, "titration_step": titration, "model_deployment": promote,
+                "n_of_1_enrolment": n_of_1}
+
+    def n_of_1_allocation(self, pid: str, role: str) -> list[str]:
+        """The concealed A/B order of a patient's N-of-1 trial. Only the unblinded pharmacist
+        may see it; patient, treating clinician and outcome assessor stay blind."""
+        if role != "pharmacist":
+            raise PermissionError("N-of-1 allocation is concealed; only the unblinded pharmacist may view it")
+        return list(self._n_of_1_allocations[pid])
 
     # ------------------------------------------------------------ patients
     def enroll_patient(self, identity: str, record: dict, live: dict) -> str:
@@ -155,10 +179,11 @@ class IntelligentEnterprise:
 
     async def run_cycle(self, observations: dict, now: datetime | None = None) -> CycleReport:
         ctx = self.context(observations, now)
+        self.messenger.release_held(ctx.now)   # morning delivery of messages held overnight
         report = await self.swarm.cycle(ctx)
         self.history.append(report)
         # Consults are delivered once; the patient waits for the clinician's decision.
-        for pid, pt in self.patients.items():
+        for pt in self.patients.values():
             if pt.get("status") == "new_consult":
                 pt["status"] = "awaiting_clinician"
         return report
@@ -173,10 +198,8 @@ class IntelligentEnterprise:
                 await self.run_cycle(await feed())
             except Exception:        # one bad cycle must not stop the facility; it is logged and alerted
                 log.exception("cycle failed; controllers remain on last known-good setpoints")
-            try:
+            with contextlib.suppress(asyncio.TimeoutError):   # timeout = time for the next cycle
                 await asyncio.wait_for(stop.wait(), timeout=interval_s)
-            except asyncio.TimeoutError:
-                pass
 
     # ------------------------------------------------------------ humans
     def decide(self, request_id: str, approve: bool, by: str, role: str, note: str = "",

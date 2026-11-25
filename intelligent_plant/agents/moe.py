@@ -55,12 +55,16 @@ class MoEResult:
 class MixtureOfExperts:
     def __init__(self, experts: list[Expert], top_k: int = 4, temperature: float = 0.5,
                  always_consult: tuple[str, ...] = ()):
+        if temperature <= 0:
+            raise ValueError("temperature must be > 0")
         self.experts = {e.name: e for e in experts}
         self.reliability = {e.name: 1.0 for e in experts}
         self.top_k, self.temperature = top_k, temperature
         self.always_consult = tuple(always_consult)     # ordered: results must not depend on hash seeds
 
     def gate(self, query: dict) -> dict[str, float]:
+        if not self.experts:
+            return {}
         logits = {n: (e.relevance(query) * math.log1p(self.reliability[n] * math.e)) / self.temperature
                   for n, e in self.experts.items()}
         mx = max(logits.values())
@@ -70,12 +74,12 @@ class MixtureOfExperts:
 
     async def consult(self, query: dict, ctx: Context) -> MoEResult:
         w = self.gate(query)
-        chosen = sorted(w, key=w.get, reverse=True)[: self.top_k]
+        chosen = sorted(w, key=lambda name: w[name], reverse=True)[: self.top_k]
         chosen = list(dict.fromkeys(list(self.always_consult) + chosen))
         results = await asyncio.gather(*(self.experts[n].opine(query, ctx) for n in chosen),
                                        return_exceptions=True)
         opinions, abstained, flags = [], [], []
-        for n, r in zip(chosen, results):
+        for n, r in zip(chosen, results, strict=True):
             if isinstance(r, BaseException):
                 abstained.append(n)
                 flags.append(f"Expert {n} failed ({type(r).__name__}); its domain is unassessed.")
@@ -85,21 +89,23 @@ class MixtureOfExperts:
                 opinions.append(r)
                 flags.extend(r.flags)
         answers: dict[str, tuple[str, float]] = {}
-        by_q: dict[str, list[ExpertOpinion]] = {}
+        by_q: dict[str, list[tuple[str, ExpertOpinion]]] = {}
         for o in opinions:
-            if o.recommendation:
-                by_q.setdefault(o.question, []).append(o)
+            # A blocking opinion counts even without a categorical answer (fail closed).
+            if o.recommendation or o.blocking:
+                by_q.setdefault(o.question, []).append((o.recommendation or "blocked", o))
         for q, ops in by_q.items():
-            blocking = [o for o in ops if o.blocking]
+            blocking = [rec for rec, o in ops if o.blocking]
             if blocking:
                 # Every blocking verdict is reported, in a deterministic order.
-                answers[q] = ("+".join(sorted({o.recommendation for o in blocking})), 1.0)
+                answers[q] = ("+".join(sorted(set(blocking))), 1.0)
                 continue
             votes: dict[str, float] = {}
-            for o in ops:
-                votes[o.recommendation] = votes.get(o.recommendation, 0.0) + w[o.expert] * o.confidence
-            rec = max(votes, key=votes.get)
-            answers[q] = (rec, votes[rec] / sum(votes.values()))
+            for rec_name, o in ops:
+                votes[rec_name] = votes.get(rec_name, 0.0) + w.get(o.expert, 0.0) * o.confidence
+            rec = max(votes, key=lambda r: votes[r])
+            total = sum(votes.values())
+            answers[q] = (rec, votes[rec] / total if total > 0 else 0.0)
         return MoEResult(answers, list(dict.fromkeys(flags)), opinions, chosen, abstained, w)
 
     def answer(self, result: MoEResult, question: str) -> str | None:

@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import itertools
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import numpy as np
 
@@ -131,13 +131,18 @@ def qaoa(Q: np.ndarray, p: int = 2, restarts: int = 4, seed: int = 0, shots: int
         evals += 1
         return float(state(theta).probabilities() @ En)
 
+    if restarts < 1:
+        raise ValueError("restarts must be >= 1")
     rng = np.random.default_rng(seed)
-    best_theta, best_val = None, float("inf")
+    best_theta: np.ndarray | None = None
+    best_val = float("inf")
     for _ in range(restarts):
         t0 = np.concatenate([rng.uniform(0, math.pi, p), rng.uniform(0, math.pi / 2, p)])
         t, v = nelder_mead(cost, t0)
         if v < best_val:
             best_theta, best_val = t, v
+    if best_theta is None:
+        raise RuntimeError("QAOA optimisation produced no finite cost")
     sv = state(best_theta)
     probs = sv.probabilities()
     counts = sv.sample(shots, rng)
@@ -169,7 +174,11 @@ def grover_search(n: int, marked: set[int], shots: int = 1, seed: int = 0) -> Gr
     N, M = 2 ** n, len(marked)
     if not 0 < M < N:
         raise ValueError("need 0 < |marked| < 2**n")
-    k = max(1, int(math.floor(math.pi / 4 * math.sqrt(N / M))))
+    if any(not 0 <= int(i) < N for i in marked):
+        raise ValueError("marked indices must lie in [0, 2**n)")
+    # Optimal iteration count round(pi/(4 theta) - 1/2), sin(theta) = sqrt(M/N). When most states
+    # are marked this is 0: amplifying would rotate PAST the solutions and do worse than guessing.
+    k = max(0, round(math.pi / (4 * math.asin(math.sqrt(M / N))) - 0.5))
     sv = Statevector(n)
     for q in range(n):
         sv.h(q)
@@ -194,7 +203,10 @@ H2_NUCLEAR_REPULSION = 0.7199689944489797
 
 
 def hamiltonian_matrix(terms: dict[str, float]) -> np.ndarray:
-    return sum(c * pauli_matrix(p) for p, c in terms.items())
+    if not terms:
+        raise ValueError("empty Hamiltonian")
+    mats = [c * pauli_matrix(p) for p, c in terms.items()]
+    return np.sum(mats, axis=0)
 
 
 @dataclass
@@ -226,13 +238,18 @@ def vqe(terms: dict[str, float], layers: int = 2, restarts: int = 3, seed: int =
             sv.ry(q, theta[k]); k += 1
         return sum(c * sv.expectation_pauli(p) for p, c in terms.items())
 
+    if restarts < 1:
+        raise ValueError("restarts must be >= 1")
     rng = np.random.default_rng(seed)
     nparam = n * (layers + 1)
-    best_t, best_e = None, float("inf")
+    best_t: np.ndarray | None = None
+    best_e = float("inf")
     for _ in range(restarts):
         t, e = nelder_mead(energy, rng.uniform(-math.pi, math.pi, nparam), step=0.5, iters=600)
         if e < best_e:
             best_t, best_e = t, e
+    if best_t is None:
+        raise RuntimeError("VQE optimisation produced no finite energy")
     exact = float(np.linalg.eigvalsh(hamiltonian_matrix(terms)).min())
     return VQEResult(best_e, exact, best_e - exact, best_t.tolist(), evals, abs(best_e - exact) < 1.6e-3)
 
