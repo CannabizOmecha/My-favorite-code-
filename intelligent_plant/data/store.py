@@ -26,7 +26,11 @@ def _rng(field: str, lo: float, hi: float) -> Validator:
         x = d.get(field)
         if x is None:
             return []
-        return [] if lo <= float(x) <= hi else [f"{field}={x} outside [{lo}, {hi}]"]
+        try:
+            fx = float(x)
+        except (TypeError, ValueError):
+            return [f"{field}={x!r} is not numeric"]
+        return [] if lo <= fx <= hi else [f"{field}={x} outside [{lo}, {hi}]"]   # NaN fails the range
     return v
 
 
@@ -115,7 +119,8 @@ class RecordStore:
 
     def _entity_id(self, entity: str, data: dict) -> str:
         fields = SCHEMA[entity].get("id_fields") or [SCHEMA[entity]["required"][0]]
-        return "|".join(str(data[f]) for f in fields)
+        # Escape the separator so ("A|2026", "x") and ("A", "2026|x") cannot collide.
+        return "|".join(str(data[f]).replace("\\", "\\\\").replace("|", "\\|") for f in fields)
 
     def append(self, entity: str, data: dict, prov: Provenance, reason_code: str | None = None) -> int:
         errs = self.validate(entity, data)
@@ -131,8 +136,9 @@ class RecordStore:
             row = self._db.execute("SELECT hash FROM records ORDER BY seq DESC LIMIT 1").fetchone()
             prev_hash = row[0] if row else "GENESIS"
             ts = datetime.now(timezone.utc).isoformat()
+            cal = None if prov.calibrated is None else bool(prov.calibrated)   # hashed as stored
             payload = _canon([entity, eid, version, data, prov.source, prov.operator, prov.instrument,
-                              prov.calibrated, ts, reason_code, prev_hash])
+                              cal, ts, reason_code, prev_hash])
             h = hashlib.sha256(payload.encode()).hexdigest()
             cur = self._db.execute(
                 "INSERT INTO records(entity,entity_id,version,data,source,operator,instrument,calibrated,"
@@ -165,9 +171,18 @@ class RecordStore:
         out = [json.loads(d) for (d,) in rows]
         return [o for o in out if where is None or where(o)]
 
-    def verify_chain(self) -> tuple[bool, int | None]:
-        """Recompute every hash. Returns (ok, first_bad_seq)."""
+    def head(self) -> tuple[str, int]:
+        """(latest hash, record count): publish this to an external anchor so that truncating
+        the tail of the chain - which leaves the remaining links valid - is detectable."""
+        row = self._db.execute("SELECT hash FROM records ORDER BY seq DESC LIMIT 1").fetchone()
+        return (row[0] if row else "GENESIS"), self.count()
+
+    def verify_chain(self, expected_head: str | None = None,
+                     expected_count: int | None = None) -> tuple[bool, int | None]:
+        """Recompute every hash. Returns (ok, first_bad_seq). Pass a previously anchored head
+        and/or count to also detect deletion of the most recent records."""
         prev = "GENESIS"
+        n, head_seen = 0, expected_head in (None, "GENESIS")
         for row in self._db.execute("SELECT seq,entity,entity_id,version,data,source,operator,instrument,calibrated,"
                                     "recorded_at,reason_code,prev_hash,hash FROM records ORDER BY seq"):
             seq, ent, eid, ver, data, src, op, ins, cal, ts, rc, ph, h = row
@@ -178,6 +193,10 @@ class RecordStore:
             if hashlib.sha256(payload.encode()).hexdigest() != h:
                 return False, seq
             prev = h
+            n += 1
+            head_seen = head_seen or h == expected_head
+        if (expected_count is not None and n < expected_count) or not head_seen:
+            return False, n + 1      # records after this point are missing
         return True, None
 
     def count(self) -> int:
@@ -196,6 +215,8 @@ class RecordStore:
             chain["breaks"].append("outcome->administration")
             return chain
         chain["product"] = p = self.get("product", a["product_id"])
+        if not p:
+            chain["breaks"].append("administration->product")
         chain["coa"] = c = self.get("coa", a["coa_id"])      # COA on the admin record (Appendix B rule 3)
         if not c:
             chain["breaks"].append("administration->coa")

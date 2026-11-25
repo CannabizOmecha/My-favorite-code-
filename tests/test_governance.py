@@ -339,3 +339,95 @@ def test_parse_json_object_takes_first_object():
     from intelligent_plant.agents.llm import parse_json_object
     assert parse_json_object('ok {"severity": "warn", "message": "a"} and {"b": 1}') == {"severity": "warn",
                                                                                          "message": "a"}
+
+
+# ------------------------------------------------------------------ swarm-review regressions (governance/data)
+@pytest.mark.parametrize("meds,cannabinoids", [(["St. John's Wort"], {"CBD"}), (["ciclosporin"], {"CBD"}),
+                                               (["Coumadin"], {"THC"}), (["codeine"], {"THC"}),
+                                               (["tramadol"], {"CBD"}), (["clobazam"], {"Cannabidiol"}),
+                                               (["clobazam"], set()), (["clobazam"], {"unknown oil"})])
+def test_interaction_checks_fail_closed_on_names_and_aliases(meds, cannabinoids):
+    assert check_interactions(meds, cannabinoids)
+
+
+def test_narrow_ti_covers_valproate_forms_and_missing_age_fails_closed():
+    for med in ("valproic acid", "Divalproex", "ciclosporin"):
+        assert any(f.code == "NARROW_TI" for f in screen_contraindications(PatientRiskProfile(age=40, medications=[med])))
+    codes = {f.code: f.level for f in screen_contraindications(PatientRiskProfile(age=None, pregnant_or_lactating=True))}
+    assert codes["AGE_UNKNOWN"] == "stop" and codes["PREGNANCY"] == "stop"
+
+
+def test_redaction_covers_whole_risk_profile_and_nested_fields():
+    from dataclasses import asdict
+    rec = asdict(PatientRiskProfile(age=30, medications=["warfarin"], psychosis_history_personal=True,
+                                    cyp2c9_genotype="*1/*3"))
+    rec["nested"] = {"synthase_genotype": "BT/BD", "ok": 1}
+    v = redact_for_role(rec, "grower")
+    for k in ("medications", "psychosis_history_personal", "cyp2c9_genotype", "substance_use_disorder_history"):
+        assert v[k] == "[REDACTED]"
+    assert v["nested"] == {"synthase_genotype": "[REDACTED]", "ok": 1} and v["age"] == 30
+
+
+def test_persistent_vault_requires_a_key(tmp_path):
+    with pytest.raises(ValueError):
+        PseudonymVault(str(tmp_path / "v.db"))
+    k = b"k" * 32
+    a = PseudonymVault(str(tmp_path / "v.db"), key=k).pseudonymize("Jane")
+    assert PseudonymVault(str(tmp_path / "v.db"), key=k).pseudonymize("Jane") == a
+
+
+def test_approval_owner_comes_from_policy_and_decisions_are_final():
+    from intelligent_plant.governance.autonomy import ApprovalRequest, policy_for
+    q = ApprovalQueue()
+    with pytest.raises(PermissionError):
+        q.submit(ApprovalRequest("p", "dose_selection", "treating_clinician", "s", {}, [], []))
+    with pytest.raises(PermissionError):
+        q.submit(ApprovalRequest("p", "product_recommendation", "data_steward", "s", {}, [], []))
+    r = q.submit(ApprovalRequest("p", "product_recommendation", "treating_clinician", "s", {}, [], []))
+    q.decide(r.request_id, False, "Dr", "treating_clinician")
+    with pytest.raises(ValueError):
+        q.decide(r.request_id, True, "Dr", "treating_clinician")
+    assert policy_for(" Dose_Selection ").autonomy == policy_for("dose_selection").autonomy
+
+
+def test_hemp_cap_fails_closed_on_unknown_or_nan():
+    from datetime import date
+    cfg = load_jurisdictions()
+    on = date(2027, 1, 1)
+    assert not check_hemp_product(cfg, on, 0.1, 0.1, None, False).compliant
+    assert not check_hemp_product(cfg, on, 0.1, float("nan"), 0.1, False).compliant
+    assert not check_hemp_product(cfg, on, 0.1, 0.1, float("nan"), False).compliant
+
+
+def test_chain_truncation_detected_against_anchor_and_ids_do_not_collide():
+    s = RecordStore()
+    rec = {"batch_id": "B1", "genotype_id": "G", "room_id": "R", "start_date": "2026-01-01", "yield_g": 100}
+    s.append("batch", rec, P)
+    s.append("batch", {**rec, "batch_id": "B2"}, P)
+    head, n = s.head()
+    s._db.execute("DELETE FROM records WHERE seq=(SELECT MAX(seq) FROM records)")
+    assert s.verify_chain()[0]                                  # links alone cannot see a cut tail
+    assert not s.verify_chain(expected_head=head, expected_count=n)[0]
+    assert s._entity_id("environment_log", {"room_id": "A|2026", "timestamp": "x"}) != \
+        s._entity_id("environment_log", {"room_id": "A", "timestamp": "2026|x"})
+
+
+def test_non_numeric_value_is_rejected_not_crashing_bulk_ingest():
+    from intelligent_plant.data.store import bulk_append
+    s = RecordStore()
+    rec = {"batch_id": "B1", "genotype_id": "G", "room_id": "R", "start_date": "2026-01-01", "yield_g": "n/a"}
+    ok, rejected = bulk_append(s, "batch", [rec, {**rec, "batch_id": "B2", "yield_g": 5}], P)
+    assert (ok, len(rejected)) == (1, 1)
+
+
+def test_integer_calibrated_flag_verifies():
+    s = RecordStore()
+    s.append("batch", {"batch_id": "B1", "genotype_id": "G", "room_id": "R", "start_date": "2026-01-01"},
+             Provenance("t", "op", calibrated=1))
+    assert s.verify_chain() == (True, None)
+
+
+def test_deploy_requires_named_approver():
+    reg = ModelRegistry()
+    with pytest.raises(PermissionError):
+        reg.deploy("m", "1", "  ", clinical=False)

@@ -43,9 +43,9 @@ class FacilityState:
 
 class IntelligentEnterprise:
     def __init__(self, db_path: str = ":memory:", vault_path: str = ":memory:", use_llm: bool | None = None,
-                 jury: bool = True, config_path: str | None = None):
+                 jury: bool = True, config_path: str | None = None, vault_key: bytes | None = None):
         self.store = RecordStore(db_path)
-        self.vault = PseudonymVault(vault_path)
+        self.vault = PseudonymVault(vault_path, key=vault_key)
         self.approvals = ApprovalQueue()
         self.registry = ModelRegistry()
         self.config = load_jurisdictions(config_path)

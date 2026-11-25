@@ -86,7 +86,7 @@ TASKS: dict[str, TaskPolicy] = {
 
 def policy_for(task: str) -> TaskPolicy:
     # Unknown tasks get the most conservative treatment that still lets a human see them.
-    return TASKS.get(task, TaskPolicy(Autonomy.DECISION_SUPPORT, "operations_manager", "unknown", "unknown",
+    return TASKS.get(str(task).strip().lower(), TaskPolicy(Autonomy.DECISION_SUPPORT, "operations_manager", "unknown", "unknown",
                                       "default-conservative"))
 
 
@@ -116,6 +116,12 @@ class ApprovalQueue:
         self.overrides: list[dict[str, Any]] = []
 
     def submit(self, req: ApprovalRequest) -> ApprovalRequest:
+        """The accountable owner comes from the task policy, never from the submitter."""
+        pol = policy_for(req.task)
+        if pol.autonomy == Autonomy.HUMAN_ONLY:
+            raise PermissionError(f"{req.task} is reserved to a human ({pol.owner_role}); it cannot be queued.")
+        if req.owner_role != pol.owner_role:
+            raise PermissionError(f"{req.task} is owned by {pol.owner_role}, not {req.owner_role}.")
         with self._lock:
             self._items[req.request_id] = req
         return req
@@ -127,6 +133,8 @@ class ApprovalQueue:
         r = self._items[request_id]
         if role != r.owner_role:
             raise PermissionError(f"{role} is not the accountable owner ({r.owner_role}) for {r.task}")
+        if r.status != "pending":
+            raise ValueError(f"request {request_id} was already {r.status} by {r.decided_by}")
         r.status = "approved" if approve else "rejected"
         r.decided_by, r.note = by, note
         if not approve:
