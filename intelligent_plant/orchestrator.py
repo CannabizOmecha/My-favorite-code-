@@ -78,7 +78,8 @@ class IntelligentEnterprise:
                 s.outbox.append({"to": staff, "patient_id": p.payload.get("patient_id"), "task": p.task,
                                  "text": p.summary})
             if "patient" in to and p.payload.get("patient_event"):
-                self.messenger.send(p.payload["patient_id"], p.payload["patient_event"], p.payload, ctx.now)
+                self.messenger.send(p.payload["patient_id"], p.payload["patient_event"], p.payload, ctx.now,
+                                    event_id=p.target)
             if p.task == "patient_progress_summary" and p.payload.get("patient_id") in self.patients:
                 self.patients[p.payload["patient_id"]]["last_summary_at"] = ctx.now
 
@@ -155,6 +156,7 @@ class IntelligentEnterprise:
 
     async def run_cycle(self, observations: dict, now: datetime | None = None) -> CycleReport:
         ctx = self.context(observations, now)
+        self.messenger.release_held(ctx.now)   # morning delivery of messages held overnight
         report = await self.swarm.cycle(ctx)
         self.history.append(report)
         # Consults are delivered once; the patient waits for the clinician's decision.
