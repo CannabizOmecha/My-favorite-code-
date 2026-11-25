@@ -1,6 +1,4 @@
 """Every worked example in Appendix A, reproduced as a regression test."""
-import math
-
 import numpy as np
 import pytest
 

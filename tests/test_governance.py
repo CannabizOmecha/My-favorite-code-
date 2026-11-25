@@ -1,7 +1,7 @@
 """Safety and governance invariants: what the swarm may and may not do on its own."""
 import asyncio
 import sqlite3
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 
 import pytest
 

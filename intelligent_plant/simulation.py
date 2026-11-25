@@ -128,22 +128,22 @@ def build_world(ent) -> dict:
     seed_registry_records(ent)
     ent.learning_loops["yield_g_m2"] = yield_learning_loop()
     # Patients (identities go straight into the vault; agents see pseudonyms only)
-    p_new = ent.enroll_patient("Jane Example, DOB 1971-03-02",
-                               {"age_band": "55-64", "indication": "chronic_pain_adult", "consent_version": "v3"},
-                               {"status": "new_consult", "indication": "chronic_pain_adult", "standard_care_tried": True,
-                                "onset_need": "sustained", "food_relation": "variable",
-                                "preferences": {"avoid_psychoactivity": True, "route_preference": "oral",
-                                                "goals": ["sleep", "walking the dog again"]},
-                                "profile": PatientRiskProfile(age=55, medications=["warfarin", "lorazepam"],
-                                                              cyp2c9_genotype="*1/*3")})
-    p_young = ent.enroll_patient("Sam Example, DOB 2003-06-10",
-                                 {"age_band": "18-24", "indication": "ptsd", "consent_version": "v3"},
-                                 {"status": "new_consult", "indication": "ptsd", "standard_care_tried": False,
-                                  "profile": PatientRiskProfile(age=23, psychosis_history_family_strong=True)})
-    p_peds = ent.enroll_patient("Child Example",
-                                {"age_band": "0-17", "indication": "dravet", "consent_version": "v3"},
-                                {"status": "new_consult", "indication": "dravet",
-                                 "profile": PatientRiskProfile(age=9, medications=["clobazam", "valproate"])})
+    ent.enroll_patient("Jane Example, DOB 1971-03-02",
+                       {"age_band": "55-64", "indication": "chronic_pain_adult", "consent_version": "v3"},
+                       {"status": "new_consult", "indication": "chronic_pain_adult", "standard_care_tried": True,
+                        "onset_need": "sustained", "food_relation": "variable",
+                        "preferences": {"avoid_psychoactivity": True, "route_preference": "oral",
+                                        "goals": ["sleep", "walking the dog again"]},
+                        "profile": PatientRiskProfile(age=55, medications=["warfarin", "lorazepam"],
+                                                      cyp2c9_genotype="*1/*3")})
+    ent.enroll_patient("Sam Example, DOB 2003-06-10",
+                       {"age_band": "18-24", "indication": "ptsd", "consent_version": "v3"},
+                       {"status": "new_consult", "indication": "ptsd", "standard_care_tried": False,
+                        "profile": PatientRiskProfile(age=23, psychosis_history_family_strong=True)})
+    ent.enroll_patient("Child Example",
+                       {"age_band": "0-17", "indication": "dravet", "consent_version": "v3"},
+                       {"status": "new_consult", "indication": "dravet",
+                        "profile": PatientRiskProfile(age=9, medications=["clobazam", "valproate"])})
     p_tit = ent.enroll_patient("Alex Example, DOB 1960-01-01",
                                {"age_band": "65-74", "indication": "chronic_pain_adult", "consent_version": "v3"},
                                {"indication": "chronic_pain_adult", "meds_changed": True,
